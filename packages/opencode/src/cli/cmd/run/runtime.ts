@@ -18,6 +18,7 @@ import { MessageID } from "@/session/schema"
 import { createRunDemo } from "./demo"
 import { resolveModelInfo, resolveRunTuiConfig, resolveSessionInfo } from "./runtime.boot"
 import { createRuntimeLifecycle } from "./runtime.lifecycle"
+import { createMultiAiCodeImBridge } from "./multi-ai-code-im-bridge"
 import { trace } from "./trace"
 import { cycleVariant, formatModelLabel, resolveSavedVariant, resolveVariant, saveVariant } from "./variant.shared"
 import type { LocalReplayAnchor, LocalReplayRow, RunInput, RunPrompt, RunProvider, StreamCommit } from "./types"
@@ -55,6 +56,7 @@ type RunRuntimeInput = {
   replay?: boolean
   replayLimit?: number
   demo?: RunInput["demo"]
+  multiAiCodeImIpc?: string
 }
 
 type RunLocalInput = {
@@ -74,6 +76,7 @@ type RunLocalInput = {
   replay?: boolean
   replayLimit?: number
   demo?: RunInput["demo"]
+  multiAiCodeImIpc?: string
 }
 
 type StreamTransportModule = Pick<
@@ -181,6 +184,7 @@ async function resolveExitTitle(
 async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDeps = {}): Promise<void> {
   const start = performance.now()
   const log = trace()
+  const imBridge = createMultiAiCodeImBridge(input.multiAiCodeImIpc)
   const tuiConfigTask = resolveRunTuiConfig()
   const ctx = await input.boot()
   const modelTask = resolveModelInfo(ctx.sdk, ctx.directory, ctx.model)
@@ -656,6 +660,13 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
             includeFiles,
             onVisibleOutput: (anchor) => {
               outputAnchor = anchor
+              if (anchor.kind === "assistant") {
+                imBridge?.sendAssistantText({
+                  text: anchor.text,
+                  messageID: anchor.messageID,
+                  partID: anchor.partID,
+                })
+              }
             },
             signal,
           })
@@ -719,6 +730,7 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
       await state.stream?.then((item) => item.handle.close()).catch(() => {})
     }
   } finally {
+    imBridge?.close()
     const title = await resolveExitTitle(ctx, input, state)
 
     await shell.close({
@@ -748,6 +760,7 @@ export async function runInteractiveLocalMode(input: RunLocalInput): Promise<voi
     replay: input.replay,
     replayLimit: input.replayLimit,
     demo: input.demo,
+    multiAiCodeImIpc: input.multiAiCodeImIpc,
     resolveSession: () => {
       if (session) {
         return session
@@ -797,6 +810,7 @@ export async function runInteractiveMode(
       replay: input.replay,
       replayLimit: input.replayLimit,
       demo: input.demo,
+      multiAiCodeImIpc: input.multiAiCodeImIpc,
       boot: async () => ({
         sdk: input.sdk,
         directory: input.directory,
