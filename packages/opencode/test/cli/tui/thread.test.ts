@@ -4,7 +4,11 @@ import fs from "fs/promises"
 import path from "path"
 import yargs from "yargs"
 import { tmpdir } from "../../fixture/fixture"
-import { TuiThreadCommand, resolveThreadDirectory } from "../../../src/cli/cmd/tui"
+import {
+  TuiThreadCommand,
+  createMultiAiCodeImTuiEventHandler,
+  resolveThreadDirectory,
+} from "../../../src/cli/cmd/tui"
 import { cliIt } from "../../lib/cli-process"
 
 describe("tui thread", () => {
@@ -70,6 +74,67 @@ describe("tui thread", () => {
       .parse(["--mdns", "--no-mdns"])
 
     expect(args.mdns).toBe(false)
+  })
+
+  test("accepts the hidden Multi-AI Code IM IPC option in default TUI mode", async () => {
+    const args = await yargs([])
+      .command({ ...TuiThreadCommand, handler: () => {} })
+      .exitProcess(false)
+      .parse(["--multi-ai-code-im-ipc", "tcp://127.0.0.1:1?token=test", "."])
+
+    expect(args.multiAiCodeImIpc).toBe("tcp://127.0.0.1:1?token=test")
+  })
+
+  test("forwards completed assistant text parts from default TUI events", () => {
+    const sent: Array<{ text: string; messageID?: string; partID?: string }> = []
+    const handleEvent = createMultiAiCodeImTuiEventHandler({
+      sendAssistantText(input) {
+        sent.push(input)
+      },
+      close() {},
+    })
+
+    handleEvent({
+      payload: {
+        type: "message.updated",
+        properties: {
+          sessionID: "ses_1",
+          info: { id: "msg_1", role: "assistant" },
+        },
+      },
+    } as never)
+    handleEvent({
+      payload: {
+        type: "message.part.updated",
+        properties: {
+          sessionID: "ses_1",
+          part: {
+            id: "part_1",
+            messageID: "msg_1",
+            type: "text",
+            text: "hello",
+            time: { end: Date.now() },
+          },
+        },
+      },
+    } as never)
+    handleEvent({
+      payload: {
+        type: "message.part.updated",
+        properties: {
+          sessionID: "ses_1",
+          part: {
+            id: "part_1",
+            messageID: "msg_1",
+            type: "text",
+            text: "hello",
+            time: { end: Date.now() },
+          },
+        },
+      },
+    } as never)
+
+    expect(sent).toEqual([{ text: "hello", messageID: "msg_1", partID: "part_1" }])
   })
 
   cliIt.live("rejects mini-only options without --mini", ({ opencode }) =>
