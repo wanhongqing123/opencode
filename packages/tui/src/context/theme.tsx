@@ -113,7 +113,10 @@ export const { use: useTheme, provider: ThemeProvider } = createSimpleContext({
 
     setStore(
       produce((draft) => {
-        const lock = pick(kv.get("theme_mode_lock"))
+        // Host apps embedding the TUI can pin the theme mode via env so it does
+        // not follow terminal background detection (e.g. multi-ai-code desktop).
+        const envLock = pick(process.env["OPENCODE_THEME_MODE"]?.toLowerCase())
+        const lock = envLock ?? pick(kv.get("theme_mode_lock"))
         const mode = lock ?? pick(renderer.themeMode) ?? props.mode
         if (!lock && pick(kv.get("theme_mode")) !== undefined) kv.set("theme_mode", undefined)
         draft.mode = mode
