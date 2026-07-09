@@ -115,8 +115,10 @@ export const { use: useTheme, provider: ThemeProvider } = createSimpleContext({
       produce((draft) => {
         // Host apps embedding the TUI can pin the theme mode via env so it does
         // not follow terminal background detection (e.g. multi-ai-code desktop).
+        // A user's explicit lock (persisted in kv) wins over the env default, so
+        // switching mode stays possible and is remembered across sessions.
         const envLock = pick(process.env["OPENCODE_THEME_MODE"]?.toLowerCase())
-        const lock = envLock ?? pick(kv.get("theme_mode_lock"))
+        const lock = pick(kv.get("theme_mode_lock")) ?? envLock
         const mode = lock ?? pick(renderer.themeMode) ?? props.mode
         if (!lock && pick(kv.get("theme_mode")) !== undefined) kv.set("theme_mode", undefined)
         draft.mode = mode
@@ -203,7 +205,14 @@ export const { use: useTheme, provider: ThemeProvider } = createSimpleContext({
     }
 
     function apply(mode: "dark" | "light") {
-      if (store.lock !== undefined) kv.set("theme_mode", mode)
+      // When a lock is in effect (including a host env default), switching the
+      // mode re-locks to the new mode and persists it, so "Switch to light/dark"
+      // is remembered next launch instead of snapping back to the env default.
+      if (store.lock !== undefined) {
+        setStore("lock", mode)
+        kv.set("theme_mode_lock", mode)
+        kv.set("theme_mode", mode)
+      }
       if (store.mode === mode) return
       setStore("mode", mode)
       refreshSystemTheme(mode)
