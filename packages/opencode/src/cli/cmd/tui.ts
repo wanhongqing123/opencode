@@ -14,12 +14,42 @@ import { writeHeapSnapshot } from "v8"
 import { ServerAuth } from "@/server/auth"
 import { validateSession } from "../tui/validate-session"
 import { win32InstallCtrlCGuard } from "@opencode-ai/tui/terminal-win32"
+import { createMultiAiCodeImBridge, type MultiAiCodeImBridge } from "./run/multi-ai-code-im-bridge"
 
 declare global {
   const OPENCODE_WORKER_PATH: string
 }
 
 type RpcClient = ReturnType<typeof Rpc.client<typeof rpc>>
+
+export function createMultiAiCodeImTuiEventHandler(bridge?: MultiAiCodeImBridge) {
+  const assistantMessageIds = new Set<string>()
+  const forwardedPartIds = new Set<string>()
+
+  return (event: GlobalEvent) => {
+    if (!bridge) return
+    const payload = event.payload
+    if (payload.type === "message.updated") {
+      const info = payload.properties.info
+      if (info.role === "assistant") assistantMessageIds.add(info.id)
+      return
+    }
+
+    if (payload.type !== "message.part.updated") return
+    const part = payload.properties.part
+    if (part.type !== "text") return
+    if (!part.time?.end) return
+    if (!assistantMessageIds.has(part.messageID)) return
+    if (forwardedPartIds.has(part.id)) return
+
+    forwardedPartIds.add(part.id)
+    bridge.sendAssistantText({
+      text: part.text,
+      messageID: part.messageID,
+      partID: part.id,
+    })
+  }
+}
 
 function createWorkerFetch(client: RpcClient): typeof fetch {
   const fn = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -39,10 +69,11 @@ function createWorkerFetch(client: RpcClient): typeof fetch {
   return fn as typeof fetch
 }
 
-function createEventSource(client: RpcClient): EventSource {
+function createEventSource(client: RpcClient, onEvent?: (event: GlobalEvent) => void): EventSource {
   return {
     subscribe: async (handler) => {
       return client.on<GlobalEvent>("global.event", (e) => {
+        onEvent?.(e)
         handler(e)
       })
     },
@@ -120,6 +151,10 @@ export const TuiThreadCommand = cmd({
         hidden: true,
         default: false,
       })
+      .option("multi-ai-code-im-ipc", {
+        type: "string",
+        hidden: true,
+      })
       .option("mini", {
         type: "boolean",
         describe: "start the minimal interactive interface",
@@ -171,6 +206,7 @@ export const TuiThreadCommand = cmd({
         replay: noReplay ? false : undefined,
         replayLimit: args.replayLimit,
         demo: args.demo,
+        multiAiCodeImIpc: args.multiAiCodeImIpc,
       })
       return
     }
@@ -229,6 +265,8 @@ export const TuiThreadCommand = cmd({
 
       const prompt = await input(args.prompt)
       const config = await TuiConfig.get()
+      const imBridge = createMultiAiCodeImBridge(args.multiAiCodeImIpc)
+      const handleImEvent = createMultiAiCodeImTuiEventHandler(imBridge)
 
       const network = resolveNetworkOptionsNoConfig(args)
       const external = hasArg("--port") || hasArg("--hostname") || network.mdns === true
@@ -245,7 +283,7 @@ export const TuiThreadCommand = cmd({
         : {
             url: "http://opencode.internal",
             fetch: createWorkerFetch(client),
-            events: createEventSource(client),
+            events: createEventSource(client, handleImEvent),
           }
 
       try {
@@ -296,6 +334,7 @@ export const TuiThreadCommand = cmd({
           }),
         )
       } finally {
+        imBridge?.close()
         await stop()
       }
     } finally {
