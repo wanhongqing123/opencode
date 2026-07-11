@@ -148,6 +148,16 @@ export type TuiInput = {
   fetch?: typeof fetch
   headers?: RequestInit["headers"]
   events?: EventSource
+  multiAiCodeImControl?: {
+    sendControlResult(input: { requestID: string; ok: boolean; text: string; error?: string }): void
+    onControlCommand(
+      handler: (
+        command:
+          | { command: "switch_mode"; mode: "plan" | "build" }
+          | { command: "status"; requestID: string },
+      ) => void,
+    ): () => void
+  }
   pluginHost: TuiPluginHost
 }
 
@@ -317,7 +327,9 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
                                                                   <LocationProvider>
                                                                     <App
                                                                       onSnapshot={input.onSnapshot}
+                                                                      directory={input.directory}
                                                                       pluginHost={input.pluginHost}
+                                                                      multiAiCodeImControl={input.multiAiCodeImControl}
                                                                     />
                                                                   </LocationProvider>
                                                                 </EditorContextProvider>
@@ -362,7 +374,12 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
   })
 })
 
-function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPluginHost }) {
+function App(props: {
+  onSnapshot?: () => Promise<string[]>
+  directory?: string
+  pluginHost: TuiPluginHost
+  multiAiCodeImControl?: TuiInput["multiAiCodeImControl"]
+}) {
   const startup = useTuiStartup()
   const tuiConfig = useTuiConfig()
   const route = useRoute()
@@ -496,6 +513,41 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
         })
       }
     })
+  })
+
+  onMount(() => {
+    const unsubscribe = props.multiAiCodeImControl?.onControlCommand((command) => {
+      if (command.command === "status") {
+        const model = local.model.current()
+        const parsedModel = local.model.parsed()
+        const agent = local.agent.current()
+        const sessionID = route.data.type === "session" ? route.data.sessionID : undefined
+        const lines = [
+          "OpenCode",
+          `Session: ${sessionID ?? "<none>"}`,
+          `Directory: ${props.directory ?? process.cwd()}`,
+          `Agent: ${agent?.name ?? "<none>"}`,
+          `Mode: ${agent?.name === "plan" ? "plan" : "build"}`,
+          `Provider: ${parsedModel.provider}`,
+          `Model: ${parsedModel.model}`,
+          ...(model ? [`Model ID: ${model.providerID}/${model.modelID}`] : []),
+        ]
+        props.multiAiCodeImControl?.sendControlResult({
+          requestID: command.requestID,
+          ok: true,
+          text: lines.join("\n"),
+        })
+        return
+      }
+      if (command.command !== "switch_mode") return
+      local.agent.set(command.mode === "plan" ? "plan" : "build")
+      toast.show({
+        variant: "info",
+        message: `Switched to ${command.mode === "plan" ? "Plan" : "Build"} mode from IM`,
+        duration: 2500,
+      })
+    })
+    onCleanup(() => unsubscribe?.())
   })
 
   let continued = false

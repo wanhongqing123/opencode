@@ -85,6 +85,10 @@ describe("tui thread", () => {
       sendAssistantText(input) {
         sent.push(input)
       },
+      onControlCommand() {
+        return () => {}
+      },
+      sendControlResult() {},
       close() {},
     })
 
