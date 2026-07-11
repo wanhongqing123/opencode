@@ -322,6 +322,7 @@ export const TuiThreadCommand = cmd({
             fetch: transport.fetch,
             headers: transport.headers,
             events: transport.events,
+            multiAiCodeImControl: imBridge,
             args: {
               continue: args.continue,
               sessionID: args.session,
