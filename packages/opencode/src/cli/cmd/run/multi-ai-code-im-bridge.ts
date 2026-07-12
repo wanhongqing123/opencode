@@ -20,6 +20,7 @@ export type MultiAiCodeImControlCommand =
   | {
       command: "switch_mode"
       mode: "plan" | "build"
+      requestID?: string
     }
   | {
       command: "status"
@@ -37,8 +38,9 @@ export function createMultiAiCodeImBridge(endpoint?: string): MultiAiCodeImBridg
   if (!config) return undefined
 
   let socket: net.Socket | undefined
-  let failed = false
+  let closed = false
   let buffer = ""
+  let reconnectTimer: ReturnType<typeof setTimeout> | undefined
   const controlHandlers = new Set<(command: MultiAiCodeImControlCommand) => void>()
 
   const emitControlCommand = (command: MultiAiCodeImControlCommand) => {
@@ -51,9 +53,21 @@ export function createMultiAiCodeImBridge(endpoint?: string): MultiAiCodeImBridg
     }
   }
 
+  // 断线后按固定退避重连，而不是首个错误就永久失效：瞬时 TCP 抖动不能让
+  // 本会话余下时间的 IM 回传与控制命令全部失联。close() 之后不再重连。
+  const scheduleReconnect = () => {
+    if (closed || reconnectTimer) return
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = undefined
+      connect()
+    }, 3000)
+    if (typeof reconnectTimer.unref === "function") reconnectTimer.unref()
+  }
+
   const connect = () => {
-    if (failed) return undefined
+    if (closed) return undefined
     if (socket && !socket.destroyed) return socket
+    buffer = ""
     socket = net.createConnection({ host: config.host, port: config.port })
     socket.setEncoding("utf8")
     socket.on("connect", () => {
@@ -81,6 +95,9 @@ export function createMultiAiCodeImBridge(endpoint?: string): MultiAiCodeImBridg
             emitControlCommand({
               command: "switch_mode",
               mode: payload.mode,
+              ...(typeof payload.requestId === "string" && payload.requestId.trim()
+                ? { requestID: payload.requestId }
+                : {}),
             })
             continue
           }
@@ -97,9 +114,13 @@ export function createMultiAiCodeImBridge(endpoint?: string): MultiAiCodeImBridg
       }
     })
     socket.on("error", () => {
-      failed = true
       socket?.destroy()
       socket = undefined
+      scheduleReconnect()
+    })
+    socket.on("close", () => {
+      socket = undefined
+      scheduleReconnect()
     })
     return socket
   }
@@ -139,6 +160,11 @@ export function createMultiAiCodeImBridge(endpoint?: string): MultiAiCodeImBridg
       }
     },
     close() {
+      closed = true
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer)
+        reconnectTimer = undefined
+      }
       socket?.destroy()
       socket = undefined
     },
