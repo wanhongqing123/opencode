@@ -153,7 +153,7 @@ export type TuiInput = {
     onControlCommand(
       handler: (
         command:
-          | { command: "switch_mode"; mode: "plan" | "build" }
+          | { command: "switch_mode"; mode: "plan" | "build"; requestID?: string }
           | { command: "status"; requestID: string },
       ) => void,
     ): () => void
@@ -546,6 +546,14 @@ function App(props: {
         message: `Switched to ${command.mode === "plan" ? "Plan" : "Build"} mode from IM`,
         duration: 2500,
       })
+      // 主仓以 requestId RPC 等确认；带 requestID 时回执真实结果，避免宿主超时误报。
+      if (command.requestID) {
+        props.multiAiCodeImControl?.sendControlResult({
+          requestID: command.requestID,
+          ok: true,
+          text: "",
+        })
+      }
     })
     onCleanup(() => unsubscribe?.())
   })
