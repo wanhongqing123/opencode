@@ -154,7 +154,8 @@ export type TuiInput = {
       handler: (
         command:
           | { command: "switch_mode"; mode: "plan" | "build"; requestID?: string }
-          | { command: "status"; requestID: string },
+          | { command: "status"; requestID: string }
+          | { command: "model"; requestID: string; model?: string },
       ) => void,
     ): () => void
   }
@@ -517,6 +518,43 @@ function App(props: {
 
   onMount(() => {
     const unsubscribe = props.multiAiCodeImControl?.onControlCommand((command) => {
+      const modelChoices = () =>
+        sync.data.provider
+          .flatMap((provider) =>
+            Object.entries(provider.models)
+              .filter(([, info]) => info.status !== "deprecated")
+              .map(([modelID, info]) => ({
+                providerID: provider.id,
+                providerName: provider.name ?? provider.id,
+                modelID,
+                modelName: info.name ?? modelID,
+                key: `${provider.id}/${modelID}`,
+              })),
+          )
+          .toSorted((left, right) =>
+            left.providerName.localeCompare(right.providerName) ||
+            left.modelName.localeCompare(right.modelName) ||
+            left.key.localeCompare(right.key),
+          )
+
+      const formatModelList = () => {
+        const current = local.model.current()
+        const currentKey = current ? `${current.providerID}/${current.modelID}` : undefined
+        const choices = modelChoices()
+        const lines = [`当前模型：${currentKey ?? "<none>"}`]
+        if (!choices.length) {
+          lines.push("模型列表暂不可用。")
+          return lines.join("\n")
+        }
+        lines.push("可用模型：")
+        for (const [index, choice] of choices.entries()) {
+          const marker = choice.key === currentKey ? "（当前）" : ""
+          lines.push(`${index + 1}. ${choice.modelName} (${choice.key})${marker}`)
+        }
+        lines.push("用法：/model <序号或 provider/model>")
+        return lines.join("\n")
+      }
+
       if (command.command === "status") {
         const model = local.model.current()
         const parsedModel = local.model.parsed()
@@ -536,6 +574,72 @@ function App(props: {
           requestID: command.requestID,
           ok: true,
           text: lines.join("\n"),
+        })
+        return
+      }
+      if (command.command === "model") {
+        const selection = command.model?.trim()
+        if (!selection) {
+          props.multiAiCodeImControl?.sendControlResult({
+            requestID: command.requestID,
+            ok: true,
+            text: formatModelList(),
+          })
+          return
+        }
+
+        const choices = modelChoices()
+        let target: { providerID: string; modelID: string; key: string; modelName: string } | undefined
+        if (/^\d+$/.test(selection)) {
+          const index = Number(selection)
+          const choice = index > 0 ? choices[index - 1] : undefined
+          if (choice) target = choice
+        } else if (selection.includes("/")) {
+          const parsed = Model.parse(selection)
+          const choice = choices.find((item) => item.providerID === parsed.providerID && item.modelID === parsed.modelID)
+          if (choice) target = choice
+        } else {
+          const matches = choices.filter(
+            (item) => item.modelID === selection || item.modelName.toLowerCase() === selection.toLowerCase(),
+          )
+          if (matches.length === 1) {
+            target = matches[0]
+          } else if (matches.length > 1) {
+            props.multiAiCodeImControl?.sendControlResult({
+              requestID: command.requestID,
+              ok: true,
+              text:
+                "模型名不唯一，请使用完整 provider/model：\n" +
+                matches.map((item) => `- ${item.modelName} (${item.key})`).join("\n"),
+            })
+            return
+          }
+        }
+
+        if (!target) {
+          props.multiAiCodeImControl?.sendControlResult({
+            requestID: command.requestID,
+            ok: true,
+            text: `未找到模型：${selection}\n\n${formatModelList()}`,
+          })
+          return
+        }
+
+        const current = local.model.current()
+        if (current?.providerID === target.providerID && current.modelID === target.modelID) {
+          props.multiAiCodeImControl?.sendControlResult({
+            requestID: command.requestID,
+            ok: true,
+            text: `当前已经是模型：${target.key}`,
+          })
+          return
+        }
+
+        local.model.set({ providerID: target.providerID, modelID: target.modelID }, { recent: true })
+        props.multiAiCodeImControl?.sendControlResult({
+          requestID: command.requestID,
+          ok: true,
+          text: `已切换模型：${target.modelName} (${target.key})`,
         })
         return
       }
