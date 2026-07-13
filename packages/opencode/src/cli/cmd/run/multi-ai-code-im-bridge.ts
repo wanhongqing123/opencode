@@ -64,8 +64,8 @@ export function createMultiAiCodeImBridge(endpoint?: string): MultiAiCodeImBridg
   }
 
   // ---------------------------------------------------------------------------
-  // 控制连接：electron -> codex/opencode 命令（switch_mode/status）。断线固定退避
-  // 重连，与 codex 侧对齐。宿主靠 control_ready 把这条连接识别为控制通道。
+  // 控制连接：electron -> codex/opencode 命令（switch_mode/status/model）。断线固定
+  // 退避重连，与 codex 侧对齐。宿主靠 control_ready 把这条连接识别为控制通道。
   // ---------------------------------------------------------------------------
   let controlSocket: net.Socket | undefined
   let controlBuffer = ""
