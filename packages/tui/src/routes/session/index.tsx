@@ -82,6 +82,11 @@ import { getRevertDiffFiles } from "../../util/revert-diff"
 import { OPENCODE_BASE_MODE, useBindings, useCommandShortcut, useOpencodeKeymap } from "../../keymap"
 import { usePathFormatter } from "../../context/path-format"
 import { LocationProvider } from "../../context/location"
+import {
+  SESSION_SCROLLBAR_DEFAULT_MIGRATION_KEY,
+  SESSION_SCROLLBAR_VISIBLE_KEY,
+  shouldApplySessionScrollbarDefault,
+} from "./scrollbar"
 
 addDefaultParsers(parsers.parsers)
 
@@ -263,7 +268,7 @@ export function Session() {
   const [timestamps, setTimestamps] = kv.signal<"hide" | "show">("timestamps", "hide")
   const [showDetails, setShowDetails] = kv.signal("tool_details_visibility", true)
   const [showAssistantMetadata, _setShowAssistantMetadata] = kv.signal("assistant_metadata_visibility", true)
-  const [showScrollbar, setShowScrollbar] = kv.signal("scrollbar_visible", false)
+  const [showScrollbar, setShowScrollbar] = kv.signal(SESSION_SCROLLBAR_VISIBLE_KEY, true)
   const [diffWrapMode] = kv.signal<"word" | "none">("diff_wrap_mode", "word")
   const [_animationsEnabled, _setAnimationsEnabled] = kv.signal("animations_enabled", true)
   const [showGenericToolOutput, setShowGenericToolOutput] = kv.signal("generic_tool_output_visibility", false)
@@ -283,6 +288,19 @@ export function Session() {
   const toast = useToast()
   const sdk = useSDK()
   const editor = useEditorContext()
+
+  createEffect(() => {
+    if (kv.get(SESSION_SCROLLBAR_DEFAULT_MIGRATION_KEY) === true) return
+    if (
+      shouldApplySessionScrollbarDefault({
+        visible: kv.get(SESSION_SCROLLBAR_VISIBLE_KEY),
+        migrated: kv.get(SESSION_SCROLLBAR_DEFAULT_MIGRATION_KEY),
+      })
+    ) {
+      setShowScrollbar(() => true)
+    }
+    kv.set(SESSION_SCROLLBAR_DEFAULT_MIGRATION_KEY, true)
+  })
 
   createEffect(() => {
     const sessionID = route.sessionID
