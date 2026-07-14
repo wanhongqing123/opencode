@@ -31,6 +31,11 @@ export type MultiAiCodeImControlCommand =
       requestID: string
       model?: string
     }
+  | {
+      command: "goal"
+      requestID: string
+      goal?: string
+    }
 
 type BridgeConfig = {
   host: string
@@ -104,6 +109,7 @@ export function createMultiAiCodeImBridge(endpoint?: string): MultiAiCodeImBridg
             command?: unknown
             mode?: unknown
             model?: unknown
+            goal?: unknown
             requestId?: unknown
           }
           if (payload.token !== config.token || payload.kind !== "control") continue
@@ -133,6 +139,17 @@ export function createMultiAiCodeImBridge(endpoint?: string): MultiAiCodeImBridg
               requestID: payload.requestId,
               ...(typeof payload.model === "string" && payload.model.trim()
                 ? { model: payload.model.trim() }
+                : {}),
+            })
+            continue
+          }
+          if (payload.command === "goal") {
+            if (typeof payload.requestId !== "string" || !payload.requestId.trim()) continue
+            emitControlCommand({
+              command: "goal",
+              requestID: payload.requestId,
+              ...(typeof payload.goal === "string" && payload.goal.trim()
+                ? { goal: payload.goal.trim() }
                 : {}),
             })
           }
