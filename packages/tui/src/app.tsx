@@ -155,7 +155,8 @@ export type TuiInput = {
         command:
           | { command: "switch_mode"; mode: "plan" | "build"; requestID?: string }
           | { command: "status"; requestID: string }
-          | { command: "model"; requestID: string; model?: string },
+          | { command: "model"; requestID: string; model?: string }
+          | { command: "goal"; requestID: string; goal?: string },
       ) => void,
     ): () => void
   }
@@ -517,6 +518,12 @@ function App(props: {
   })
 
   onMount(() => {
+    let remoteImGoal: { objective: string; status: "active" | "paused" } | undefined
+    const formatRemoteImGoal = () => {
+      if (!remoteImGoal) return "OpenCode 当前没有设置 IM Goal。"
+      return [`OpenCode IM Goal ${remoteImGoal.status}`, `Objective: ${remoteImGoal.objective}`].join("\n")
+    }
+
     const unsubscribe = props.multiAiCodeImControl?.onControlCommand((command) => {
       const modelChoices = () =>
         sync.data.provider
@@ -549,7 +556,8 @@ function App(props: {
         lines.push("可用模型：")
         for (const [index, choice] of choices.entries()) {
           const marker = choice.key === currentKey ? "（当前）" : ""
-          lines.push(`${index + 1}. ${choice.modelName} (${choice.key})${marker}`)
+          lines.push(`${index + 1}. ${choice.modelName}${marker}`)
+          lines.push(`   ID: ${choice.key}`)
         }
         lines.push("用法：/model <序号或 provider/model>")
         return lines.join("\n")
@@ -640,6 +648,54 @@ function App(props: {
           requestID: command.requestID,
           ok: true,
           text: `已切换模型：${target.modelName} (${target.key})`,
+        })
+        return
+      }
+      if (command.command === "goal") {
+        const input = command.goal?.trim()
+        const usage = "用法：/goal [目标|clear|pause|resume]"
+        if (!input) {
+          props.multiAiCodeImControl?.sendControlResult({
+            requestID: command.requestID,
+            ok: true,
+            text: `${formatRemoteImGoal()}\n\n${usage}`,
+          })
+          return
+        }
+        if (input === "clear") {
+          remoteImGoal = undefined
+          props.multiAiCodeImControl?.sendControlResult({
+            requestID: command.requestID,
+            ok: true,
+            text: "OpenCode IM Goal cleared.",
+          })
+          return
+        }
+        if (input === "pause" || input === "paused") {
+          if (remoteImGoal) remoteImGoal = { ...remoteImGoal, status: "paused" }
+          props.multiAiCodeImControl?.sendControlResult({
+            requestID: command.requestID,
+            ok: !!remoteImGoal,
+            text: remoteImGoal ? formatRemoteImGoal() : `OpenCode 当前没有设置 IM Goal。\n\n${usage}`,
+            ...(remoteImGoal ? {} : { error: "no OpenCode IM goal is currently set" }),
+          })
+          return
+        }
+        if (input === "resume" || input === "active") {
+          if (remoteImGoal) remoteImGoal = { ...remoteImGoal, status: "active" }
+          props.multiAiCodeImControl?.sendControlResult({
+            requestID: command.requestID,
+            ok: !!remoteImGoal,
+            text: remoteImGoal ? formatRemoteImGoal() : `OpenCode 当前没有设置 IM Goal。\n\n${usage}`,
+            ...(remoteImGoal ? {} : { error: "no OpenCode IM goal is currently set" }),
+          })
+          return
+        }
+        remoteImGoal = { objective: input, status: "active" }
+        props.multiAiCodeImControl?.sendControlResult({
+          requestID: command.requestID,
+          ok: true,
+          text: formatRemoteImGoal(),
         })
         return
       }
