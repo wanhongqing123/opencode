@@ -36,11 +36,83 @@ export type MultiAiCodeImControlCommand =
       requestID: string
       goal?: string
     }
+  | {
+      command: "interrupt"
+      requestID: string
+    }
+  | {
+      command: "compact"
+      requestID: string
+    }
+  | {
+      command: "clear"
+      requestID: string
+    }
 
 type BridgeConfig = {
   host: string
   port: number
   token: string
+}
+
+type ControlPayload = {
+  token?: unknown
+  kind?: unknown
+  command?: unknown
+  mode?: unknown
+  model?: unknown
+  goal?: unknown
+  requestId?: unknown
+}
+
+export function parseMultiAiCodeImControlPayload(
+  payload: ControlPayload,
+  token: string,
+): MultiAiCodeImControlCommand | undefined {
+  if (payload.token !== token || payload.kind !== "control") return undefined
+  if (payload.command === "switch_mode") {
+    if (payload.mode !== "plan" && payload.mode !== "build") return undefined
+    return {
+      command: "switch_mode",
+      mode: payload.mode,
+      ...(typeof payload.requestId === "string" && payload.requestId.trim()
+        ? { requestID: payload.requestId }
+        : {}),
+    }
+  }
+
+  if (
+    payload.command === "status" ||
+    payload.command === "interrupt" ||
+    payload.command === "compact" ||
+    payload.command === "clear"
+  ) {
+    if (typeof payload.requestId !== "string" || !payload.requestId.trim()) return undefined
+    return {
+      command: payload.command,
+      requestID: payload.requestId,
+    }
+  }
+
+  if (payload.command === "model") {
+    if (typeof payload.requestId !== "string" || !payload.requestId.trim()) return undefined
+    return {
+      command: "model",
+      requestID: payload.requestId,
+      ...(typeof payload.model === "string" && payload.model.trim() ? { model: payload.model.trim() } : {}),
+    }
+  }
+
+  if (payload.command === "goal") {
+    if (typeof payload.requestId !== "string" || !payload.requestId.trim()) return undefined
+    return {
+      command: "goal",
+      requestID: payload.requestId,
+      ...(typeof payload.goal === "string" && payload.goal.trim() ? { goal: payload.goal.trim() } : {}),
+    }
+  }
+
+  return undefined
 }
 
 // 数据连接：assistant_text 发出后若在此窗口内没等到宿主回 ack，就判定这条连接
@@ -103,56 +175,9 @@ export function createMultiAiCodeImBridge(endpoint?: string): MultiAiCodeImBridg
         controlBuffer = controlBuffer.slice(lineEnd + 1)
         if (!raw) continue
         try {
-          const payload = JSON.parse(raw) as {
-            token?: unknown
-            kind?: unknown
-            command?: unknown
-            mode?: unknown
-            model?: unknown
-            goal?: unknown
-            requestId?: unknown
-          }
-          if (payload.token !== config.token || payload.kind !== "control") continue
-          if (payload.command === "switch_mode") {
-            if (payload.mode !== "plan" && payload.mode !== "build") continue
-            emitControlCommand({
-              command: "switch_mode",
-              mode: payload.mode,
-              ...(typeof payload.requestId === "string" && payload.requestId.trim()
-                ? { requestID: payload.requestId }
-                : {}),
-            })
-            continue
-          }
-          if (payload.command === "status") {
-            if (typeof payload.requestId !== "string" || !payload.requestId.trim()) continue
-            emitControlCommand({
-              command: "status",
-              requestID: payload.requestId,
-            })
-            continue
-          }
-          if (payload.command === "model") {
-            if (typeof payload.requestId !== "string" || !payload.requestId.trim()) continue
-            emitControlCommand({
-              command: "model",
-              requestID: payload.requestId,
-              ...(typeof payload.model === "string" && payload.model.trim()
-                ? { model: payload.model.trim() }
-                : {}),
-            })
-            continue
-          }
-          if (payload.command === "goal") {
-            if (typeof payload.requestId !== "string" || !payload.requestId.trim()) continue
-            emitControlCommand({
-              command: "goal",
-              requestID: payload.requestId,
-              ...(typeof payload.goal === "string" && payload.goal.trim()
-                ? { goal: payload.goal.trim() }
-                : {}),
-            })
-          }
+          const payload = JSON.parse(raw) as ControlPayload
+          const command = parseMultiAiCodeImControlPayload(payload, config.token)
+          if (command) emitControlCommand(command)
         } catch {
           // Ignore malformed host control payloads.
         }
