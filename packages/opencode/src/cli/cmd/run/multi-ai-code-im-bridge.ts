@@ -37,6 +37,12 @@ export type MultiAiCodeImControlCommand =
       goal?: string
     }
   | {
+      command: "btw"
+      requestID: string
+      task: string
+      replyID?: string
+    }
+  | {
       command: "interrupt"
       requestID: string
     }
@@ -62,6 +68,8 @@ type ControlPayload = {
   mode?: unknown
   model?: unknown
   goal?: unknown
+  task?: unknown
+  replyId?: unknown
   requestId?: unknown
 }
 
@@ -109,6 +117,16 @@ export function parseMultiAiCodeImControlPayload(
       command: "goal",
       requestID: payload.requestId,
       ...(typeof payload.goal === "string" && payload.goal.trim() ? { goal: payload.goal.trim() } : {}),
+    }
+  }
+
+  if (payload.command === "btw") {
+    if (typeof payload.requestId !== "string" || !payload.requestId.trim()) return undefined
+    return {
+      command: "btw",
+      requestID: payload.requestId,
+      task: typeof payload.task === "string" ? payload.task.trim() : "",
+      ...(typeof payload.replyId === "string" && payload.replyId.trim() ? { replyID: payload.replyId.trim() } : {}),
     }
   }
 
