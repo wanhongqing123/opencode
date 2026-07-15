@@ -157,6 +157,7 @@ export type TuiInput = {
           | { command: "status"; requestID: string }
           | { command: "model"; requestID: string; model?: string }
           | { command: "goal"; requestID: string; goal?: string }
+          | { command: "btw"; requestID: string; task: string; replyID?: string }
           | { command: "interrupt"; requestID: string }
           | { command: "compact"; requestID: string }
           | { command: "clear"; requestID: string },
@@ -699,6 +700,15 @@ function App(props: {
           requestID: command.requestID,
           ok: true,
           text: formatRemoteImGoal(),
+        })
+        return
+      }
+      if (command.command === "btw") {
+        props.multiAiCodeImControl?.sendControlResult({
+          requestID: command.requestID,
+          ok: false,
+          text: "",
+          error: "OpenCode 暂不支持 IM /btw 子任务；请直接发送普通 IM 任务。",
         })
         return
       }
