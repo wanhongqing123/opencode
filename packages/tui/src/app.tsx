@@ -156,7 +156,10 @@ export type TuiInput = {
           | { command: "switch_mode"; mode: "plan" | "build"; requestID?: string }
           | { command: "status"; requestID: string }
           | { command: "model"; requestID: string; model?: string }
-          | { command: "goal"; requestID: string; goal?: string },
+          | { command: "goal"; requestID: string; goal?: string }
+          | { command: "interrupt"; requestID: string }
+          | { command: "compact"; requestID: string }
+          | { command: "clear"; requestID: string },
       ) => void,
     ): () => void
   }
@@ -697,6 +700,150 @@ function App(props: {
           ok: true,
           text: formatRemoteImGoal(),
         })
+        return
+      }
+      if (command.command === "interrupt") {
+        const sessionID = route.data.type === "session" ? route.data.sessionID : undefined
+        if (!sessionID) {
+          props.multiAiCodeImControl?.sendControlResult({
+            requestID: command.requestID,
+            ok: false,
+            text: "",
+            error: "当前没有可中断的 OpenCode 会话。",
+          })
+          return
+        }
+        const status = sync.data.session_status?.[sessionID]
+        if (status?.type === "idle") {
+          props.multiAiCodeImControl?.sendControlResult({
+            requestID: command.requestID,
+            ok: false,
+            text: "",
+            error: "当前没有正在运行的任务。",
+          })
+          return
+        }
+        void (async () => {
+          try {
+            const result = await sdk.client.session.abort({ sessionID })
+            if (result.error) throw result.error
+            props.multiAiCodeImControl?.sendControlResult({
+              requestID: command.requestID,
+              ok: true,
+              text: "已请求中断当前任务。",
+            })
+          } catch (error) {
+            props.multiAiCodeImControl?.sendControlResult({
+              requestID: command.requestID,
+              ok: false,
+              text: "",
+              error: errorMessage(error),
+            })
+          }
+        })()
+        return
+      }
+      if (command.command === "compact") {
+        const sessionID = route.data.type === "session" ? route.data.sessionID : undefined
+        const selectedModel = local.model.current()
+        if (!sessionID) {
+          props.multiAiCodeImControl?.sendControlResult({
+            requestID: command.requestID,
+            ok: false,
+            text: "",
+            error: "当前没有可压缩的 OpenCode 会话。",
+          })
+          return
+        }
+        const status = sync.data.session_status?.[sessionID]
+        if (status && status.type !== "idle") {
+          props.multiAiCodeImControl?.sendControlResult({
+            requestID: command.requestID,
+            ok: false,
+            text: "",
+            error: "当前任务运行中，请先 /interrupt 或等待结束后再 /compact。",
+          })
+          return
+        }
+        if (!selectedModel) {
+          props.multiAiCodeImControl?.sendControlResult({
+            requestID: command.requestID,
+            ok: false,
+            text: "",
+            error: "当前没有可用于压缩上下文的模型配置。",
+          })
+          return
+        }
+        void (async () => {
+          try {
+            const result = await sdk.client.session.summarize({
+              sessionID,
+              modelID: selectedModel.modelID,
+              providerID: selectedModel.providerID,
+            })
+            if (result.error) throw result.error
+            props.multiAiCodeImControl?.sendControlResult({
+              requestID: command.requestID,
+              ok: true,
+              text: "已请求压缩当前上下文。",
+            })
+          } catch (error) {
+            props.multiAiCodeImControl?.sendControlResult({
+              requestID: command.requestID,
+              ok: false,
+              text: "",
+              error: errorMessage(error),
+            })
+          }
+        })()
+        return
+      }
+      if (command.command === "clear") {
+        const sessionID = route.data.type === "session" ? route.data.sessionID : undefined
+        const status = sessionID ? sync.data.session_status?.[sessionID] : undefined
+        if (status && status.type !== "idle") {
+          props.multiAiCodeImControl?.sendControlResult({
+            requestID: command.requestID,
+            ok: false,
+            text: "",
+            error: "当前任务运行中，请先 /interrupt 或等待结束后再 /clear。",
+          })
+          return
+        }
+        void (async () => {
+          try {
+            const selectedModel = local.model.current()
+            const agent = local.agent.current()
+            const variant = local.model.variant.current()
+            const result = await sdk.client.session.create({
+              directory: props.directory ?? process.cwd(),
+              agent: agent?.name ?? "build",
+              ...(selectedModel
+                ? {
+                    model: {
+                      providerID: selectedModel.providerID,
+                      id: selectedModel.modelID,
+                      variant,
+                    },
+                  }
+                : {}),
+            })
+            if (result.error) throw result.error
+            route.navigate({ type: "session", sessionID: result.data.id })
+            props.multiAiCodeImControl?.sendControlResult({
+              requestID: command.requestID,
+              ok: true,
+              text: "已清空上下文并开启新会话。",
+            })
+          } catch (error) {
+            props.multiAiCodeImControl?.sendControlResult({
+              requestID: command.requestID,
+              ok: false,
+              text: "",
+              error: errorMessage(error),
+            })
+          }
+        })()
         return
       }
       if (command.command !== "switch_mode") return
