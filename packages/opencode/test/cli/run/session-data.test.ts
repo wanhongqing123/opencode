@@ -177,6 +177,23 @@ describe("run session data", () => {
     expect(out.commits.map((item) => item.text)).toEqual(["visible"])
   })
 
+  test("renders inline remote IM reply content without markers", () => {
+    let data = createSessionData()
+    data = reduce(data, assistant("msg-1")).data
+    data = reduce(data, text({ id: "txt-1", messageID: "msg-1", text: "", time: { start: 1 } })).data
+
+    const out = reduce(
+      data,
+      delta(
+        "msg-1",
+        "txt-1",
+        '<remote-im-reply id="rim-0123456789abcdef你好\n</remote-im-reply id="rim-0123456789abcdef',
+      ),
+    )
+    expect(out.commits.map((item) => item.text)).toEqual(["你好\n"])
+    expect(out.data.visible.get("txt-1")).toBe("你好\n")
+  })
+
   test("drops delayed text once the message resolves to a user role", () => {
     let data = createSessionData()
     data = reduce(data, text({ id: "txt-user-1", messageID: "msg-user-1", text: "HELLO", time: { end: 1 } })).data
