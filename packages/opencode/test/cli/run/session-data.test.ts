@@ -152,6 +152,31 @@ describe("run session data", () => {
     ])
   })
 
+  test("hides remote IM reply markers across assistant stream chunks", () => {
+    let data = createSessionData()
+    data = reduce(data, assistant("msg-1")).data
+    data = reduce(data, text({ id: "txt-1", messageID: "msg-1", text: "", time: { start: 1 } })).data
+
+    let out = reduce(data, delta("msg-1", "txt-1", '<remote-im-reply id="rim-1">\nhel'))
+    expect(out.commits.map((item) => item.text)).toEqual(["hel"])
+
+    out = reduce(out.data, delta("msg-1", "txt-1", 'lo\n</remote-im-reply id="rim-1">'))
+    expect(out.commits.map((item) => item.text)).toEqual(["lo\n"])
+    expect(out.data.visible.get("txt-1")).toBe("hello\n")
+  })
+
+  test("holds a partial remote IM opening marker instead of flashing it", () => {
+    let data = createSessionData()
+    data = reduce(data, assistant("msg-1")).data
+    data = reduce(data, text({ id: "txt-1", messageID: "msg-1", text: "", time: { start: 1 } })).data
+
+    let out = reduce(data, delta("msg-1", "txt-1", "<remote-im-re"))
+    expect(out.commits).toEqual([])
+
+    out = reduce(out.data, delta("msg-1", "txt-1", 'ply id="rim-1">\nvisible'))
+    expect(out.commits.map((item) => item.text)).toEqual(["visible"])
+  })
+
   test("drops delayed text once the message resolves to a user role", () => {
     let data = createSessionData()
     data = reduce(data, text({ id: "txt-user-1", messageID: "msg-user-1", text: "HELLO", time: { end: 1 } })).data

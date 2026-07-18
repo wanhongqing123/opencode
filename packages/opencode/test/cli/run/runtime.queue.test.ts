@@ -478,4 +478,35 @@ describe("run runtime queue", () => {
     ui.submit("one")
     await expect(task).rejects.toThrow("boom")
   })
+
+  test("submits an external model prompt while displaying only its friendly text", async () => {
+    const ui = footer()
+    const seen: RunPrompt[] = []
+    let submit: ((prompt: RunPrompt) => { ok: true } | { ok: false; error: string }) | undefined
+
+    const task = runPromptQueue({
+      footer: ui.api,
+      registerExternalSubmit(next) {
+        submit = next
+        return () => {
+          submit = undefined
+        }
+      },
+      run: async (prompt) => {
+        seen.push(prompt)
+        ui.api.close()
+      },
+    })
+
+    const result = submit?.({
+      text: "wrapped model prompt",
+      displayText: "来自 IM 的消息",
+      parts: [],
+    })
+    await task
+
+    expect(result).toEqual({ ok: true })
+    expect(seen[0]?.text).toBe("wrapped model prompt")
+    expect(ui.commits.map((item) => item.text)).toEqual(["来自 IM 的消息"])
+  })
 })

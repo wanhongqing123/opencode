@@ -550,13 +550,42 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
       footer,
       initialInput: input.initialInput,
       trace: log,
+      registerExternalSubmit: (submit) =>
+        imBridge?.onControlCommand((command) => {
+          if (command.command !== "submit_user_message") {
+            if (command.requestID) {
+              imBridge.sendControlResult({
+                requestID: command.requestID,
+                ok: false,
+                text: "",
+                error: `unsupported control command: ${command.command}`,
+              })
+            }
+            return
+          }
+
+          const result = submit({
+            text: command.text,
+            displayText: command.displayText,
+            parts: [],
+          })
+          imBridge.sendControlResult({
+            requestID: command.requestID,
+            ok: result.ok,
+            text: result.ok ? "queued" : "",
+            ...(!result.ok ? { error: result.error } : {}),
+          })
+        }) ?? (() => {}),
       onSend: (prompt) => {
         state.shown = true
-        state.history.push(prompt)
+        const displayPrompt = prompt.displayText
+          ? { ...prompt, text: prompt.displayText, displayText: undefined }
+          : prompt
+        state.history.push(displayPrompt)
         if (prompt.mode !== "shell") {
           rememberLocal({
             kind: "user",
-            text: prompt.text,
+            text: prompt.displayText ?? prompt.text,
             phase: "start",
             source: "system",
             messageID: prompt.messageID,
@@ -660,14 +689,8 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
             includeFiles,
             onVisibleOutput: (anchor) => {
               outputAnchor = anchor
-              if (anchor.kind === "assistant") {
-                imBridge?.sendAssistantText({
-                  text: anchor.text,
-                  messageID: anchor.messageID,
-                  partID: anchor.partID,
-                })
-              }
             },
+            onAssistantOutput: (output) => imBridge?.sendAssistantText(output),
             signal,
           })
           if (prompt.messageID) {
