@@ -85,6 +85,8 @@ type Wait = {
   armed: boolean
   live: boolean
   onVisibleOutput?: (anchor: LocalReplayAnchor) => void
+  onAssistantOutput?: (output: { text: string; messageID: string; partID: string }) => void
+  assistantText: Map<string, { messageID: string; text: string }>
   done: Deferred.Deferred<void, unknown>
 }
 
@@ -96,6 +98,7 @@ export type SessionTurnInput = {
   files: RunFilePart[]
   includeFiles: boolean
   onVisibleOutput?: (anchor: LocalReplayAnchor) => void
+  onAssistantOutput?: (output: { text: string; messageID: string; partID: string }) => void
   signal?: AbortSignal
 }
 
@@ -844,6 +847,18 @@ function createLayer(input: StreamInput) {
 
           state.tick = next.tick + 1
           state.wait = undefined
+          for (const [partID, part] of next.assistantText) {
+            if (!part.text || state.data.role.get(part.messageID) !== "assistant") continue
+            try {
+              next.onAssistantOutput?.({
+                text: part.text,
+                messageID: part.messageID,
+                partID,
+              })
+            } catch {
+              // Keep host bridge callbacks isolated from prompt completion.
+            }
+          }
           yield* Deferred.succeed(next.done, undefined).pipe(Effect.ignore)
         })
 
@@ -894,6 +909,18 @@ function createLayer(input: StreamInput) {
 
           trackBlocker(event)
 
+          const wait = state.wait
+          if (
+            wait &&
+            event.type === "message.part.updated" &&
+            event.properties.part.sessionID === input.sessionID &&
+            event.properties.part.type === "text"
+          ) {
+            wait.assistantText.set(event.properties.part.id, {
+              messageID: event.properties.part.messageID,
+              text: event.properties.part.text,
+            })
+          }
           const prev = event.type === "message.part.updated" ? listSubagentTabs(state.subagent) : undefined
           const next = reduceSessionData({
             data: state.data,
@@ -903,6 +930,20 @@ function createLayer(input: StreamInput) {
             limits: input.limits(),
           })
           state.data = next.data
+          if (
+            wait &&
+            event.type === "message.part.delta" &&
+            event.properties.sessionID === input.sessionID &&
+            event.properties.field === "text"
+          ) {
+            const text = state.data.text.get(event.properties.partID)
+            if (text !== undefined) {
+              wait.assistantText.set(event.properties.partID, {
+                messageID: event.properties.messageID,
+                text,
+              })
+            }
+          }
           const visible = next.commits.at(-1)
           if (visible) {
             state.wait?.onVisibleOutput?.({
@@ -1204,6 +1245,8 @@ function createLayer(input: StreamInput) {
             armed: false,
             live: false,
             onVisibleOutput: next.onVisibleOutput,
+            onAssistantOutput: next.onAssistantOutput,
+            assistantText: new Map(),
             done: yield* Deferred.make<void, unknown>(),
           }
           state.wait = item

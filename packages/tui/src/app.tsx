@@ -86,6 +86,7 @@ import * as TuiAudio from "./audio"
 import { win32DisableProcessedInput, win32FlushInputBuffer } from "./terminal-win32"
 import { destroyRenderer } from "./util/renderer"
 import { cliErrorMessage, errorFormat } from "./util/error"
+import { remoteImPromptParts } from "./util/remote-im-display"
 
 registerOpencodeSpinner()
 
@@ -158,6 +159,12 @@ export type TuiInput = {
           | { command: "model"; requestID: string; model?: string }
           | { command: "goal"; requestID: string; goal?: string }
           | { command: "btw"; requestID: string; task: string; replyID?: string }
+          | {
+              command: "submit_user_message"
+              requestID: string
+              text: string
+              displayText: string
+            }
           | { command: "interrupt"; requestID: string }
           | { command: "compact"; requestID: string }
           | { command: "clear"; requestID: string }
@@ -543,10 +550,11 @@ function App(props: {
                 key: `${provider.id}/${modelID}`,
               })),
           )
-          .toSorted((left, right) =>
-            left.providerName.localeCompare(right.providerName) ||
-            left.modelName.localeCompare(right.modelName) ||
-            left.key.localeCompare(right.key),
+          .toSorted(
+            (left, right) =>
+              left.providerName.localeCompare(right.providerName) ||
+              left.modelName.localeCompare(right.modelName) ||
+              left.key.localeCompare(right.key),
           )
 
       const formatModelList = () => {
@@ -566,6 +574,47 @@ function App(props: {
         }
         lines.push("用法：/model <序号或 provider/model>")
         return lines.join("\n")
+      }
+
+      if (command.command === "submit_user_message") {
+        const sessionID = route.data.type === "session" ? route.data.sessionID : undefined
+        const selectedModel = local.model.current()
+        const agent = local.agent.current()
+        if (!sessionID || !selectedModel || !agent) {
+          props.multiAiCodeImControl?.sendControlResult({
+            requestID: command.requestID,
+            ok: false,
+            text: "",
+            error: "当前 OpenCode 会话尚未准备好接收消息。",
+          })
+          return
+        }
+
+        void sdk.client.session
+          .promptAsync({
+            sessionID,
+            agent: agent.name,
+            model: selectedModel,
+            variant: local.model.variant.current(),
+            parts: remoteImPromptParts(command.text, command.displayText),
+          })
+          .then((result) => {
+            if (result.error) throw result.error
+            props.multiAiCodeImControl?.sendControlResult({
+              requestID: command.requestID,
+              ok: true,
+              text: "queued",
+            })
+          })
+          .catch((error) => {
+            props.multiAiCodeImControl?.sendControlResult({
+              requestID: command.requestID,
+              ok: false,
+              text: "",
+              error: errorMessage(error),
+            })
+          })
+        return
       }
 
       if (command.command === "status") {
@@ -609,7 +658,9 @@ function App(props: {
           if (choice) target = choice
         } else if (selection.includes("/")) {
           const parsed = Model.parse(selection)
-          const choice = choices.find((item) => item.providerID === parsed.providerID && item.modelID === parsed.modelID)
+          const choice = choices.find(
+            (item) => item.providerID === parsed.providerID && item.modelID === parsed.modelID,
+          )
           if (choice) target = choice
         } else {
           const matches = choices.filter(

@@ -29,6 +29,7 @@ export type QueueInput = {
   trace?: Trace
   onSend?: (prompt: RunPrompt) => void
   onNewSession?: () => void | Promise<void>
+  registerExternalSubmit?: (submit: (prompt: RunPrompt) => { ok: true } | { ok: false; error: string }) => () => void
   run: (prompt: RunPrompt, signal: AbortSignal) => Promise<void>
 }
 
@@ -195,7 +196,7 @@ export async function runPromptQueue(input: QueueInput): Promise<void> {
             if (sent.mode !== "shell") {
               const commit = {
                 kind: "user",
-                text: sent.text,
+                text: sent.displayText ?? sent.text,
                 phase: "start",
                 source: "system",
                 messageID: sent.messageID,
@@ -265,14 +266,18 @@ export async function runPromptQueue(input: QueueInput): Promise<void> {
     })()
   }
 
-  const submit = (prompt: RunPrompt) => {
-    if (!prompt.text.trim() || state.closed) {
-      return
+  const submit = (prompt: RunPrompt): { ok: true } | { ok: false; error: string } => {
+    if (state.closed) {
+      return { ok: false, error: "prompt queue is closed" }
+    }
+
+    if (!prompt.text.trim()) {
+      return { ok: false, error: "prompt is empty" }
     }
 
     if (prompt.mode !== "shell" && isExitCommand(prompt.text)) {
       input.footer.close()
-      return
+      return { ok: true }
     }
 
     const active = state.active
@@ -292,14 +297,14 @@ export async function runPromptQueue(input: QueueInput): Promise<void> {
       state.queued = [...state.queued, queued]
       state.queue.push(prompt)
       syncQueue()
-      return
+      return { ok: true }
     }
 
     state.queue.push(prompt)
     syncQueue()
     if (prompt.mode !== "shell" && isNewCommand(prompt.text)) {
       drain()
-      return
+      return { ok: true }
     }
 
     emit(
@@ -312,11 +317,13 @@ export async function runPromptQueue(input: QueueInput): Promise<void> {
       },
     )
     drain()
+    return { ok: true }
   }
 
   const offPrompt = input.footer.onPrompt((prompt) => {
     submit(prompt)
   })
+  const offExternalSubmit = input.registerExternalSubmit?.(submit) ?? (() => {})
   const offClose = input.footer.onClose(() => {
     close()
   })
@@ -341,6 +348,7 @@ export async function runPromptQueue(input: QueueInput): Promise<void> {
     await done.promise
   } finally {
     offPrompt()
+    offExternalSubmit()
     offClose()
     offRemoveQueued()
     close()

@@ -1,17 +1,8 @@
 import net from "node:net"
 
 export type MultiAiCodeImBridge = {
-  sendAssistantText(input: {
-    text: string
-    messageID?: string
-    partID?: string
-  }): void
-  sendControlResult(input: {
-    requestID: string
-    ok: boolean
-    text: string
-    error?: string
-  }): void
+  sendAssistantText(input: { text: string; messageID?: string; partID?: string }): void
+  sendControlResult(input: { requestID: string; ok: boolean; text: string; error?: string }): void
   onControlCommand(handler: (command: MultiAiCodeImControlCommand) => void): () => void
   close(): void
 }
@@ -41,6 +32,12 @@ export type MultiAiCodeImControlCommand =
       requestID: string
       task: string
       replyID?: string
+    }
+  | {
+      command: "submit_user_message"
+      requestID: string
+      text: string
+      displayText: string
     }
   | {
       command: "interrupt"
@@ -74,6 +71,8 @@ type ControlPayload = {
   model?: unknown
   goal?: unknown
   task?: unknown
+  text?: unknown
+  displayText?: unknown
   replyId?: unknown
   requestId?: unknown
 }
@@ -88,9 +87,7 @@ export function parseMultiAiCodeImControlPayload(
     return {
       command: "switch_mode",
       mode: payload.mode,
-      ...(typeof payload.requestId === "string" && payload.requestId.trim()
-        ? { requestID: payload.requestId }
-        : {}),
+      ...(typeof payload.requestId === "string" && payload.requestId.trim() ? { requestID: payload.requestId } : {}),
     }
   }
 
@@ -135,15 +132,25 @@ export function parseMultiAiCodeImControlPayload(
     }
   }
 
+  if (payload.command === "submit_user_message") {
+    if (typeof payload.requestId !== "string" || !payload.requestId.trim()) return undefined
+    if (typeof payload.text !== "string" || !payload.text.trim()) return undefined
+    return {
+      command: "submit_user_message",
+      requestID: payload.requestId,
+      text: payload.text,
+      displayText:
+        typeof payload.displayText === "string" && payload.displayText.trim() ? payload.displayText : payload.text,
+    }
+  }
+
   // 运行时明暗切换：宿主 app 切主题时下发，绝对值（非 toggle），无需重启会话。
   if (payload.command === "theme") {
     if (payload.mode !== "light" && payload.mode !== "dark") return undefined
     return {
       command: "theme",
       mode: payload.mode,
-      ...(typeof payload.requestId === "string" && payload.requestId.trim()
-        ? { requestID: payload.requestId }
-        : {}),
+      ...(typeof payload.requestId === "string" && payload.requestId.trim() ? { requestID: payload.requestId } : {}),
     }
   }
 
@@ -319,8 +326,7 @@ export function createMultiAiCodeImBridge(endpoint?: string): MultiAiCodeImBridg
   return {
     sendAssistantText(input) {
       if (!input.text) return
-      const messageID =
-        input.messageID && input.messageID.trim() ? input.messageID : `opencode-im-${seq++}`
+      const messageID = input.messageID && input.messageID.trim() ? input.messageID : `opencode-im-${seq++}`
       const payload = {
         token: config.token,
         kind: "assistant_text",

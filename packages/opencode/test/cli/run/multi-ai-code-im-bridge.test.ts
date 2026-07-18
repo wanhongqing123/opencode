@@ -39,4 +39,25 @@ describe("parseMultiAiCodeImControlPayload", () => {
       replyID: "reply-btw-fixed",
     })
   })
+
+  test("parses source-level user messages with separate display text", () => {
+    const result = parseMultiAiCodeImControlPayload(
+      {
+        token: "token",
+        kind: "control",
+        command: "submit_user_message",
+        requestId: "req-1",
+        text: "wrapped model prompt",
+        displayText: "来自 IM 的消息",
+      },
+      "token",
+    )
+
+    expect(result).toEqual({
+      command: "submit_user_message",
+      requestID: "req-1",
+      text: "wrapped model prompt",
+      displayText: "来自 IM 的消息",
+    })
+  })
 })

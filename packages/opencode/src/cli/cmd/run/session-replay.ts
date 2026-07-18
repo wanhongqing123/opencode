@@ -346,6 +346,10 @@ export function replayActiveText(data: SessionData, current: SessionData): Strea
     data.text.set(partID, text)
     data.sent.set(partID, sent)
     data.visible.set(partID, visible)
+    const renderText = current.renderText.get(partID)
+    if (renderText !== undefined) {
+      data.renderText.set(partID, renderText)
+    }
     const messageID = current.msg.get(partID)
     if (messageID) {
       data.msg.set(partID, messageID)
