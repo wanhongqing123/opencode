@@ -1,34 +1,45 @@
-function isOpenMarker(line: string) {
-  const value = line.trim()
-  return value === "<remote-im-reply>" || /^<remote-im-reply id="[A-Za-z0-9_-]+">$/.test(value)
+const OPEN_PREFIX = "<remote-im-reply"
+const CLOSE_PREFIX = "</remote-im-reply"
+
+function openMarkerBodyStart(marker: string) {
+  const suffix = marker.slice(OPEN_PREFIX.length)
+  if (suffix.startsWith(">")) return OPEN_PREFIX.length + 1
+
+  const idPrefix = ' id="'
+  if (!suffix.startsWith(idPrefix)) return undefined
+  const withID = suffix.slice(idPrefix.length)
+  const exactEnd = withID.indexOf('\">')
+  if (exactEnd >= 0) return OPEN_PREFIX.length + idPrefix.length + exactEnd + 2
+
+  const generated = /^rim-[0-9a-fA-F]{16}/.exec(withID)?.[0]
+  if (!generated) return undefined
+  let bodyStart = OPEN_PREFIX.length + idPrefix.length + generated.length
+  if (marker.slice(bodyStart).startsWith('"')) bodyStart++
+  if (marker.slice(bodyStart).startsWith(">")) bodyStart++
+  return bodyStart
 }
 
-function isCloseMarker(line: string) {
-  const value = line.trim()
-  return value === "</remote-im-reply>" || /^<\/remote-im-reply id="[A-Za-z0-9_-]+">$/.test(value)
+function replyBodyEnd(body: string) {
+  const close = body.indexOf(CLOSE_PREFIX)
+  if (close >= 0) return close
+  for (let length = Math.min(body.length, CLOSE_PREFIX.length); length > 0; length--) {
+    if (body.endsWith(CLOSE_PREFIX.slice(0, length))) return body.length - length
+  }
+  return body.length
 }
 
 export function visibleRemoteImReplyText(text: string): string {
-  let foundOpen = false
-  let inside = false
-  let visible = ""
-
-  for (const segment of text.match(/[^\n]*(?:\n|$)/g) ?? []) {
-    if (!segment) continue
-    const line = segment.endsWith("\n") ? segment.slice(0, -1) : segment
-    if (isOpenMarker(line)) {
-      foundOpen = true
-      inside = true
-      continue
-    }
-    if (inside && isCloseMarker(line)) break
-    if (inside) visible += segment
+  const open = text.indexOf(OPEN_PREFIX)
+  if (open >= 0) {
+    const marker = text.slice(open)
+    const bodyStart = openMarkerBodyStart(marker)
+    if (bodyStart === undefined) return ""
+    const body = marker.slice(bodyStart).replace(/^\r?\n/, "")
+    return body.slice(0, replyBodyEnd(body))
   }
 
-  if (foundOpen) return visible
-
   const candidate = text.trimStart()
-  if (!candidate.includes("\n") && "<remote-im-reply".startsWith(candidate)) return ""
+  if (!candidate.includes("\n") && OPEN_PREFIX.startsWith(candidate)) return ""
   return text
 }
 
