@@ -160,7 +160,8 @@ export type TuiInput = {
           | { command: "btw"; requestID: string; task: string; replyID?: string }
           | { command: "interrupt"; requestID: string }
           | { command: "compact"; requestID: string }
-          | { command: "clear"; requestID: string },
+          | { command: "clear"; requestID: string }
+          | { command: "theme"; mode: "light" | "dark"; requestID?: string },
       ) => void,
     ): () => void
   }
@@ -854,6 +855,19 @@ function App(props: {
             })
           }
         })()
+        return
+      }
+      if (command.command === "theme") {
+        // 宿主 app 切明暗时下发。setMode(=pin) 会重新锁定并持久化到目标模式，
+        // 覆盖 OPENCODE_THEME_MODE 环境默认，运行时立即重绘、无需重启会话。
+        setMode(command.mode)
+        if (command.requestID) {
+          props.multiAiCodeImControl?.sendControlResult({
+            requestID: command.requestID,
+            ok: true,
+            text: "",
+          })
+        }
         return
       }
       if (command.command !== "switch_mode") return

@@ -54,6 +54,11 @@ export type MultiAiCodeImControlCommand =
       command: "clear"
       requestID: string
     }
+  | {
+      command: "theme"
+      mode: "light" | "dark"
+      requestID?: string
+    }
 
 type BridgeConfig = {
   host: string
@@ -127,6 +132,18 @@ export function parseMultiAiCodeImControlPayload(
       requestID: payload.requestId,
       task: typeof payload.task === "string" ? payload.task.trim() : "",
       ...(typeof payload.replyId === "string" && payload.replyId.trim() ? { replyID: payload.replyId.trim() } : {}),
+    }
+  }
+
+  // 运行时明暗切换：宿主 app 切主题时下发，绝对值（非 toggle），无需重启会话。
+  if (payload.command === "theme") {
+    if (payload.mode !== "light" && payload.mode !== "dark") return undefined
+    return {
+      command: "theme",
+      mode: payload.mode,
+      ...(typeof payload.requestId === "string" && payload.requestId.trim()
+        ? { requestID: payload.requestId }
+        : {}),
     }
   }
 
