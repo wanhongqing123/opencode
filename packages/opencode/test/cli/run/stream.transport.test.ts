@@ -2107,6 +2107,61 @@ describe("run stream transport", () => {
     }
   })
 
+  test("returns raw remote IM reply markers while rendering only their content", async () => {
+    const src = eventFeed()
+    const ui = footer()
+    const output: Array<{ text: string; messageID: string; partID: string }> = []
+    const transport = await createSessionTransport({
+      sdk: sdk({
+        stream: src.stream,
+        promptAsync: async () => {
+          queueMicrotask(() => {
+            src.push(busy())
+            src.push(assistant("msg-1"))
+            src.push(textUpdated(textPart("txt-1", "msg-1", "")))
+            src.push(textDelta("msg-1", "txt-1", '<remote-im-reply id="rim-1">\nha'))
+            src.push(textDelta("msg-1", "txt-1", "ha"))
+            src.push(textDelta("msg-1", "txt-1", '\n</remote-im-reply id="rim-1">'))
+            src.push(idle())
+          })
+          return ok(undefined)
+        },
+      }),
+      sessionID: "session-1",
+      thinking: true,
+      limits: () => ({}),
+      footer: ui.api,
+    })
+
+    try {
+      await transport.runPromptTurn({
+        agent: undefined,
+        model: undefined,
+        variant: undefined,
+        prompt: { text: "hello", parts: [] },
+        files: [],
+        includeFiles: false,
+        onAssistantOutput: (item) => output.push(item),
+      })
+
+      expect(output).toEqual([
+        {
+          text: '<remote-im-reply id="rim-1">\nhaha\n</remote-im-reply id="rim-1">',
+          messageID: "msg-1",
+          partID: "txt-1",
+        },
+      ])
+      expect(ui.commits.filter((item) => item.kind === "assistant").map((item) => item.text)).toEqual([
+        "ha",
+        "ha",
+        "\n",
+      ])
+    } finally {
+      src.close()
+      await transport.close()
+    }
+  })
+
   test("flushes interrupted output when the active turn aborts", async () => {
     const src = eventFeed()
     const seen = defer()

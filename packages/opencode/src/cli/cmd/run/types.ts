@@ -34,6 +34,7 @@ export type RunPrompt = {
   messageID?: string
   partID?: string
   text: string
+  displayText?: string
   parts: RunPromptPart[]
   mode?: "shell"
   command?: {

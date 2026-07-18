@@ -26,6 +26,7 @@
 //   to the next pending request or to the prompt view.
 import type { Event, Part, PermissionRequest, QuestionRequest, ToolPart } from "@opencode-ai/sdk/v2"
 import * as Locale from "@/util/locale"
+import { visibleRemoteImReplyText } from "./remote-im-display"
 import { toolView } from "./tool"
 import type { FooterOutput, FooterPatch, FooterView, StreamCommit } from "./types"
 
@@ -61,6 +62,7 @@ type SessionCommit = StreamCommit
 // - text:   part ID → full accumulated text so far
 // - sent:   part ID → byte offset of last flushed text (for incremental output)
 // - visible: part ID → rendered text for an active part after display transforms
+// - renderText: part ID → post-echo source used by streaming display transforms
 // - end:    part IDs whose time.end has arrived (part is finished)
 // - shell:  shell call ID → chosen transcript source for direct shell calls
 // - echo:   message ID → bash outputs to strip from the next assistant chunk
@@ -84,6 +86,7 @@ export type SessionData = {
   text: Map<string, string>
   sent: Map<string, number>
   visible: Map<string, string>
+  renderText: Map<string, string>
   end: Set<string>
   echo: Map<string, Set<string>>
 }
@@ -122,6 +125,7 @@ export function createSessionData(
     text: new Map(),
     sent: new Map(),
     visible: new Map(),
+    renderText: new Map(),
     end: new Set(),
     echo: new Map(),
   }
@@ -541,6 +545,17 @@ function flushPart(data: SessionData, commits: SessionCommit[], partID: string, 
 
   if (chunk) {
     data.sent.set(partID, text.length)
+  }
+
+  if (kind === "assistant" && chunk) {
+    const source = (data.renderText.get(partID) ?? "") + chunk
+    data.renderText.set(partID, source)
+    const next = visibleRemoteImReplyText(source)
+    const previous = data.visible.get(partID) ?? ""
+    chunk = next.startsWith(previous) ? next.slice(previous.length) : ""
+  }
+
+  if (chunk) {
     data.visible.set(partID, (data.visible.get(partID) ?? "") + chunk)
     commits.push({
       kind,
@@ -572,6 +587,7 @@ function drop(data: SessionData, partID: string) {
   data.text.delete(partID)
   data.sent.delete(partID)
   data.visible.delete(partID)
+  data.renderText.delete(partID)
   data.msg.delete(partID)
   data.end.delete(partID)
 }
