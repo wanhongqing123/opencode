@@ -4,11 +4,7 @@ import fs from "fs/promises"
 import path from "path"
 import yargs from "yargs"
 import { tmpdir } from "../../fixture/fixture"
-import {
-  TuiThreadCommand,
-  createMultiAiCodeImTuiEventHandler,
-  resolveThreadDirectory,
-} from "../../../src/cli/cmd/tui"
+import { TuiThreadCommand, createMultiAiCodeImTuiEventHandler, resolveThreadDirectory } from "../../../src/cli/cmd/tui"
 import { cliIt } from "../../lib/cli-process"
 
 describe("tui thread", () => {
@@ -85,6 +81,7 @@ describe("tui thread", () => {
       sendAssistantText(input) {
         sent.push(input)
       },
+      sendTurnError() {},
       onControlCommand() {
         return () => {}
       },
@@ -133,6 +130,62 @@ describe("tui thread", () => {
     } as never)
 
     expect(sent).toEqual([{ text: "hello", messageID: "msg_1", partID: "part_1" }])
+  })
+
+  test("forwards only terminal session errors after the session becomes idle", () => {
+    const sent: Array<{ text: string; messageID?: string }> = []
+    const handleEvent = createMultiAiCodeImTuiEventHandler({
+      sendAssistantText() {},
+      sendTurnError(input) {
+        sent.push(input)
+      },
+      onControlCommand() {
+        return () => {}
+      },
+      sendControlResult() {},
+      close() {},
+    })
+
+    handleEvent({
+      payload: {
+        type: "session.error",
+        properties: {
+          sessionID: "ses_retry",
+          error: { name: "ProviderError", data: { message: "temporary disconnect" } },
+        },
+      },
+    } as never)
+    handleEvent({
+      payload: {
+        type: "session.status",
+        properties: { sessionID: "ses_retry", status: { type: "retry" } },
+      },
+    } as never)
+    handleEvent({
+      payload: {
+        type: "session.status",
+        properties: { sessionID: "ses_retry", status: { type: "idle" } },
+      },
+    } as never)
+
+    handleEvent({
+      payload: {
+        type: "session.error",
+        properties: {
+          sessionID: "ses_failed",
+          error: { name: "ProviderError", data: { message: "request failed" } },
+        },
+      },
+    } as never)
+    expect(sent).toEqual([])
+    handleEvent({
+      payload: {
+        type: "session.status",
+        properties: { sessionID: "ses_failed", status: { type: "idle" } },
+      },
+    } as never)
+
+    expect(sent).toEqual([{ text: "request failed", messageID: "ses_failed:error:0" }])
   })
 
   cliIt.live("rejects mini-only options without --mini", ({ opencode }) =>
