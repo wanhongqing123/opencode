@@ -2,6 +2,7 @@ import net from "node:net"
 
 export type MultiAiCodeImBridge = {
   sendAssistantText(input: { text: string; messageID?: string; partID?: string }): void
+  sendTurnError(input: { text: string; messageID?: string }): void
   sendControlResult(input: { requestID: string; ok: boolean; text: string; error?: string }): void
   onControlCommand(handler: (command: MultiAiCodeImControlCommand) => void): () => void
   close(): void
@@ -238,7 +239,7 @@ export function createMultiAiCodeImBridge(endpoint?: string): MultiAiCodeImBridg
   }
 
   // ---------------------------------------------------------------------------
-  // 数据连接：codex/opencode -> electron 输出（assistant_text + control_result），
+  // 数据连接：codex/opencode -> electron 输出（assistant_text + turn_error + control_result），
   // 并读回 electron 的 ack。断线/半死均自愈：error/close 重连；assistant_text 超时
   // 无 ack 则强制重连并补发未 ack 的消息。
   // ---------------------------------------------------------------------------
@@ -323,24 +324,36 @@ export function createMultiAiCodeImBridge(endpoint?: string): MultiAiCodeImBridg
   }, WATCHDOG_TICK_MS)
   if (typeof watchdog.unref === "function") watchdog.unref()
 
+  const sendReliableText = (input: {
+    kind: "assistant_text" | "turn_error"
+    text: string
+    messageID?: string
+    partID?: string
+  }) => {
+    if (!input.text) return
+    const messageID = input.messageID && input.messageID.trim() ? input.messageID : `opencode-im-${seq++}`
+    const payload = {
+      token: config.token,
+      kind: input.kind,
+      text: input.text,
+      messageId: messageID,
+      partId: input.partID,
+    }
+    const line = JSON.stringify(payload) + "\n"
+    if (pending.size >= MAX_PENDING) {
+      const firstKey = pending.keys().next().value
+      if (firstKey !== undefined) pending.delete(firstKey)
+    }
+    pending.set(messageID, { line, sentAt: Date.now() })
+    writeData(line)
+  }
+
   return {
     sendAssistantText(input) {
-      if (!input.text) return
-      const messageID = input.messageID && input.messageID.trim() ? input.messageID : `opencode-im-${seq++}`
-      const payload = {
-        token: config.token,
-        kind: "assistant_text",
-        text: input.text,
-        messageId: messageID,
-        partId: input.partID,
-      }
-      const line = JSON.stringify(payload) + "\n"
-      if (pending.size >= MAX_PENDING) {
-        const firstKey = pending.keys().next().value
-        if (firstKey !== undefined) pending.delete(firstKey)
-      }
-      pending.set(messageID, { line, sentAt: Date.now() })
-      writeData(line)
+      sendReliableText({ kind: "assistant_text", ...input })
+    },
+    sendTurnError(input) {
+      sendReliableText({ kind: "turn_error", ...input })
     },
     sendControlResult(input) {
       const payload = {
