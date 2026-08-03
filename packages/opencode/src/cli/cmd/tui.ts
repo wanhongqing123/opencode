@@ -25,10 +25,47 @@ type RpcClient = ReturnType<typeof Rpc.client<typeof rpc>>
 export function createMultiAiCodeImTuiEventHandler(bridge?: MultiAiCodeImBridge) {
   const assistantMessageIds = new Set<string>()
   const forwardedPartIds = new Set<string>()
+  const pendingSessionErrors = new Map<string, string>()
+  let errorSequence = 0
 
   return (event: GlobalEvent) => {
     if (!bridge) return
     const payload = event.payload
+    if (payload.type === "session.error") {
+      const sessionID = payload.properties.sessionID
+      if (!sessionID) return
+      const error = payload.properties.error
+      if (!error || error.name === "MessageAbortedError") {
+        pendingSessionErrors.delete(sessionID)
+        return
+      }
+      const data = error.data
+      const message =
+        data && typeof data === "object" && "message" in data && typeof data.message === "string"
+          ? data.message
+          : error.name
+      pendingSessionErrors.set(sessionID, message)
+      return
+    }
+
+    if (payload.type === "session.status") {
+      const sessionID = payload.properties.sessionID
+      const status = payload.properties.status.type
+      if (status === "busy" || status === "retry") {
+        pendingSessionErrors.delete(sessionID)
+        return
+      }
+      if (status !== "idle") return
+      const message = pendingSessionErrors.get(sessionID)
+      if (!message) return
+      pendingSessionErrors.delete(sessionID)
+      bridge.sendTurnError({
+        text: message,
+        messageID: `${sessionID}:error:${errorSequence++}`,
+      })
+      return
+    }
+
     if (payload.type === "message.updated") {
       const info = payload.properties.info
       if (info.role === "assistant") assistantMessageIds.add(info.id)
