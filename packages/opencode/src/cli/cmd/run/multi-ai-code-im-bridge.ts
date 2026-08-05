@@ -2,7 +2,8 @@ import net from "node:net"
 
 export type MultiAiCodeImBridge = {
   sendAssistantText(input: { text: string; messageID?: string; partID?: string }): void
-  sendTurnError(input: { text: string; messageID?: string }): void
+  sendAssistantFinal(input: { text: string; replyID: string; messageID?: string; partID?: string }): void
+  sendTurnError(input: { text: string; replyID: string; messageID?: string }): void
   sendControlResult(input: { requestID: string; ok: boolean; text: string; error?: string }): void
   onControlCommand(handler: (command: MultiAiCodeImControlCommand) => void): () => void
   close(): void
@@ -325,10 +326,11 @@ export function createMultiAiCodeImBridge(endpoint?: string): MultiAiCodeImBridg
   if (typeof watchdog.unref === "function") watchdog.unref()
 
   const sendReliableText = (input: {
-    kind: "assistant_text" | "turn_error"
+    kind: "assistant_text" | "assistant_final" | "turn_error"
     text: string
     messageID?: string
     partID?: string
+    replyID?: string
   }) => {
     if (!input.text) return
     const messageID = input.messageID && input.messageID.trim() ? input.messageID : `opencode-im-${seq++}`
@@ -338,6 +340,7 @@ export function createMultiAiCodeImBridge(endpoint?: string): MultiAiCodeImBridg
       text: input.text,
       messageId: messageID,
       partId: input.partID,
+      replyId: input.replyID,
     }
     const line = JSON.stringify(payload) + "\n"
     if (pending.size >= MAX_PENDING) {
@@ -351,6 +354,9 @@ export function createMultiAiCodeImBridge(endpoint?: string): MultiAiCodeImBridg
   return {
     sendAssistantText(input) {
       sendReliableText({ kind: "assistant_text", ...input })
+    },
+    sendAssistantFinal(input) {
+      sendReliableText({ kind: "assistant_final", ...input })
     },
     sendTurnError(input) {
       sendReliableText({ kind: "turn_error", ...input })
