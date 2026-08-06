@@ -31,4 +31,26 @@ describe("remote IM display text", () => {
       expect.objectContaining({ text: "来自 IM 的消息", ignored: true }),
     ])
   })
+
+  test("submits remote images as native file parts", () => {
+    expect(
+      remoteImPromptParts("wrapped model prompt", "来自 IM 的图片", [
+        {
+          type: "image",
+          localPath: "/tmp/remote-im/photo.png",
+          mimeType: "image/png",
+          fileName: "photo.png",
+        },
+      ]),
+    ).toEqual([
+      expect.objectContaining({ text: "wrapped model prompt", synthetic: true }),
+      {
+        type: "file",
+        mime: "image/png",
+        filename: "photo.png",
+        url: "file:///tmp/remote-im/photo.png",
+      },
+      expect.objectContaining({ text: "来自 IM 的图片", ignored: true }),
+    ])
+  })
 })

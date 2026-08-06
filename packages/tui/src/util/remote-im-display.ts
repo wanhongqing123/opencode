@@ -1,3 +1,12 @@
+import { pathToFileURL } from "node:url"
+
+export type RemoteImImageAttachment = {
+  type: "image"
+  localPath: string
+  mimeType: string
+  fileName?: string
+}
+
 const OPEN_PREFIX = "<remote-im-reply"
 const CLOSE_PREFIX = "</remote-im-reply"
 
@@ -43,14 +52,29 @@ export function visibleRemoteImReplyText(text: string): string {
   return text
 }
 
-export function remoteImPromptParts(text: string, displayText: string) {
+export function remoteImPromptParts(
+  text: string,
+  displayText: string,
+  attachments: RemoteImImageAttachment[] = [],
+  options: { includeModelText?: boolean } = {},
+) {
   return [
-    {
-      type: "text" as const,
-      text,
-      synthetic: true,
-      metadata: { kind: "remote_im_model_prompt" },
-    },
+    ...(options.includeModelText === false
+      ? []
+      : [
+          {
+            type: "text" as const,
+            text,
+            synthetic: true,
+            metadata: { kind: "remote_im_model_prompt" },
+          },
+        ]),
+    ...attachments.map((attachment) => ({
+      type: "file" as const,
+      mime: attachment.mimeType,
+      filename: attachment.fileName,
+      url: pathToFileURL(attachment.localPath).href,
+    })),
     {
       type: "text" as const,
       text: displayText,

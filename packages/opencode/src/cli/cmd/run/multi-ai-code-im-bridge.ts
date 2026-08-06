@@ -1,4 +1,12 @@
 import net from "node:net"
+import path from "node:path"
+
+export type MultiAiCodeImAttachment = {
+  type: "image"
+  localPath: string
+  mimeType: string
+  fileName?: string
+}
 
 export type MultiAiCodeImBridge = {
   sendAssistantText(input: { text: string; messageID?: string; partID?: string }): void
@@ -40,6 +48,7 @@ export type MultiAiCodeImControlCommand =
       requestID: string
       text: string
       displayText: string
+      attachments: MultiAiCodeImAttachment[]
     }
   | {
       command: "interrupt"
@@ -75,8 +84,30 @@ type ControlPayload = {
   task?: unknown
   text?: unknown
   displayText?: unknown
+  attachments?: unknown
   replyId?: unknown
   requestId?: unknown
+}
+
+function parseAttachments(value: unknown): MultiAiCodeImAttachment[] {
+  if (!Array.isArray(value)) return []
+  return value.slice(0, 4).flatMap((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return []
+    const attachment = item as Record<string, unknown>
+    if (attachment.type !== "image") return []
+    if (typeof attachment.localPath !== "string" || !path.isAbsolute(attachment.localPath)) return []
+    if (typeof attachment.mimeType !== "string" || !attachment.mimeType.startsWith("image/")) return []
+    return [
+      {
+        type: "image" as const,
+        localPath: attachment.localPath,
+        mimeType: attachment.mimeType,
+        ...(typeof attachment.fileName === "string" && attachment.fileName.trim()
+          ? { fileName: attachment.fileName.trim() }
+          : {}),
+      },
+    ]
+  })
 }
 
 export function parseMultiAiCodeImControlPayload(
@@ -143,6 +174,7 @@ export function parseMultiAiCodeImControlPayload(
       text: payload.text,
       displayText:
         typeof payload.displayText === "string" && payload.displayText.trim() ? payload.displayText : payload.text,
+      attachments: parseAttachments(payload.attachments),
     }
   }
 
