@@ -35,10 +35,6 @@ const AgentCreateCommand = effectCmd({
   describe: "create a new agent",
   builder: (yargs: Argv) =>
     yargs
-      .option("path", {
-        type: "string",
-        describe: "directory path to generate the agent file",
-      })
       .option("description", {
         type: "string",
         describe: "what the agent should do",
@@ -69,47 +65,18 @@ const AgentCreateCommand = effectCmd({
     const runLocalEffect = <A, E>(effect: Effect.Effect<A, E>) =>
       Effect.runPromise(effect.pipe(Effect.provideService(InstanceRef, ctx)))
     yield* Effect.promise(async () => {
-      const cliPath = args.path
       const cliDescription = args.description
       const cliMode = args.mode as AgentMode | undefined
       const perms = args.permissions
 
-      const isFullyNonInteractive = cliPath && cliDescription && cliMode && perms !== undefined
+      const isFullyNonInteractive = cliDescription && cliMode && perms !== undefined
 
       if (!isFullyNonInteractive) {
         UI.empty()
         prompts.intro("Create agent")
       }
 
-      const project = ctx.project
-
-      // Determine scope/path
-      let targetPath: string
-      if (cliPath) {
-        targetPath = path.join(cliPath, "agents")
-      } else {
-        let scope: "global" | "project" = "global"
-        if (project.vcs === "git") {
-          const scopeResult = await prompts.select({
-            message: "Location",
-            options: [
-              {
-                label: "Current project",
-                value: "project" as const,
-                hint: ctx.worktree,
-              },
-              {
-                label: "Global",
-                value: "global" as const,
-                hint: Global.Path.config,
-              },
-            ],
-          })
-          if (prompts.isCancel(scopeResult)) throw new UI.CancelledError()
-          scope = scopeResult
-        }
-        targetPath = path.join(scope === "global" ? Global.Path.config : path.join(ctx.worktree, ".opencode"), "agents")
-      }
+      const targetPath = path.join(Global.Path.config, "agents")
 
       // Get description
       let description: string

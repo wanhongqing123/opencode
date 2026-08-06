@@ -142,6 +142,11 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/ModelsDev") {}
 
+// Multi-AI Code ships a reviewed models.dev snapshot beside its bundled
+// OpenCode binary. Keep the upstream fetch implementation below for easier
+// rebases, but never connect it to this custom build's execution path.
+const NETWORK_CATALOG_ENABLED = false
+
 const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -181,19 +186,14 @@ const layer = Layer.effect(
       )
     })
 
-    const loadFromDisk = fs.readJson(Flag.OPENCODE_MODELS_PATH ?? filepath).pipe(
-      Effect.catch((error) => {
-        if (
-          Flag.OPENCODE_MODELS_PATH === undefined &&
-          error._tag === "FileSystemError" &&
-          error.method === "readJson"
-        ) {
-          return fs.remove(filepath, { force: true }).pipe(Effect.ignore, Effect.as(undefined))
-        }
-        return Effect.succeed(undefined)
-      }),
-      Effect.map((v) => v as Record<string, Provider> | undefined),
-    )
+    const loadFromDisk = Flag.OPENCODE_MODELS_PATH
+      ? fs.readJson(Flag.OPENCODE_MODELS_PATH).pipe(
+          Effect.catch((error) => {
+            return Effect.succeed(undefined)
+          }),
+          Effect.map((v) => v as Record<string, Provider> | undefined),
+        )
+      : Effect.succeed(undefined)
 
     const loadSnapshot = Effect.sync(() =>
       typeof OPENCODE_MODELS_DEV === "undefined" ? undefined : OPENCODE_MODELS_DEV,
@@ -215,11 +215,11 @@ const layer = Layer.effect(
     })
 
     const populate = Effect.gen(function* () {
-      const fromDisk = yield* loadFromDisk
-      if (fromDisk) return fromDisk
+      const explicit = yield* loadFromDisk
+      if (explicit) return explicit
       const snapshot = yield* loadSnapshot
       if (snapshot) return snapshot
-      if (Flag.OPENCODE_DISABLE_MODELS_FETCH) return {}
+      if (!NETWORK_CATALOG_ENABLED) return {}
       // Flock is cross-process: concurrent opencode CLIs can race on this cache file.
       const text = yield* Effect.scoped(
         Effect.gen(function* () {
@@ -235,6 +235,7 @@ const layer = Layer.effect(
     const get = (): Effect.Effect<Record<string, Provider>> => cachedGet
 
     const refresh = Effect.fn("ModelsDev.refresh")(function* (force = false) {
+      if (!NETWORK_CATALOG_ENABLED) return
       if (!force && (yield* fresh())) return
       yield* Effect.scoped(
         Effect.gen(function* () {
@@ -252,7 +253,7 @@ const layer = Layer.effect(
       )
     })
 
-    if (!Flag.OPENCODE_DISABLE_MODELS_FETCH && !process.argv.includes("--get-yargs-completions")) {
+    if (NETWORK_CATALOG_ENABLED && !process.argv.includes("--get-yargs-completions")) {
       // Schedule.spaced runs the effect once, then waits between completions.
       yield* Effect.forkScoped(refresh().pipe(Effect.repeat(Schedule.spaced("60 minutes")), Effect.ignore))
     }

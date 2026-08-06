@@ -36,12 +36,7 @@ export type ThemeSource = Readonly<{
 
 const themeSource: ThemeSource = {
   async discover() {
-    const directories = [Global.Path.config]
-    for (let current = process.cwd(); ; current = path.dirname(current)) {
-      directories.push(path.join(current, ".opencode"))
-      if (path.dirname(current) === current) break
-    }
-    return discoverThemes(directories)
+    return discoverThemes([Global.Path.config])
   },
   subscribeRefresh(refresh) {
     process.on("SIGUSR2", refresh)

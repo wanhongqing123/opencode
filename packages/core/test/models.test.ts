@@ -8,26 +8,19 @@ import { Flag } from "@opencode-ai/core/flag/flag"
 import { Global } from "@opencode-ai/core/global"
 import { ModelsDev } from "@opencode-ai/core/models-dev"
 import { it } from "./lib/effect"
-import { readFile, rm, writeFile, utimes, mkdir } from "fs/promises"
+import { rm, writeFile, mkdir } from "fs/promises"
 import path from "path"
 
-// test/preload.ts pins OPENCODE_MODELS_PATH to a fixture so other tests can
-// resolve providers without network. These tests need to drive the on-disk
-// cache themselves and silence the eager refresh fork. Save/restore around
-// the suite — never leak the mutation to subsequent test files in the same
-// bun process.
+// Multi-AI Code always passes an explicit packaged catalog. Save and restore
+// the test preload value so this suite can verify that exact source.
 const ORIGINAL_MODELS_PATH = Flag.OPENCODE_MODELS_PATH
-const ORIGINAL_DISABLE_FETCH = Flag.OPENCODE_DISABLE_MODELS_FETCH
+const catalogFile = path.join(Global.Path.cache, "managed-models-test.json")
 beforeAll(() => {
-  Flag.OPENCODE_MODELS_PATH = undefined
-  Flag.OPENCODE_DISABLE_MODELS_FETCH = true
+  Flag.OPENCODE_MODELS_PATH = catalogFile
 })
 afterAll(() => {
   Flag.OPENCODE_MODELS_PATH = ORIGINAL_MODELS_PATH
-  Flag.OPENCODE_DISABLE_MODELS_FETCH = ORIGINAL_DISABLE_FETCH
 })
-
-const cacheFile = path.join(Global.Path.cache, "models.json")
 
 const fixture: Record<string, ModelsDev.Provider> = {
   acme: {
@@ -97,27 +90,23 @@ const buildLayer = (state: Ref.Ref<MockState>) =>
     ]),
   )
 
-const writeCacheText = (text: string, mtimeMs?: number) =>
+const writeCatalogText = (text: string) =>
   Effect.promise(async () => {
     await mkdir(Global.Path.cache, { recursive: true })
-    await writeFile(cacheFile, text)
-    if (mtimeMs !== undefined) {
-      const t = mtimeMs / 1000
-      await utimes(cacheFile, t, t)
-    }
+    await writeFile(catalogFile, text)
   })
 
-const writeCache = (data: object, mtimeMs?: number) => writeCacheText(JSON.stringify(data), mtimeMs)
+const writeCatalog = (data: object) => writeCatalogText(JSON.stringify(data))
 
 const provided = <A, E>(state: Ref.Ref<MockState>, eff: Effect.Effect<A, E, ModelsDev.Service>) =>
   eff.pipe(Effect.provide(buildLayer(state)))
 
 beforeEach(async () => {
-  await rm(cacheFile, { force: true })
+  await rm(catalogFile, { force: true })
 })
 
 afterAll(async () => {
-  await rm(cacheFile, { force: true })
+  await rm(catalogFile, { force: true })
 })
 
 const initialState: MockState = {
@@ -127,9 +116,9 @@ const initialState: MockState = {
 }
 
 describe("ModelsDev Service", () => {
-  it.live("get() returns providers from disk when cache file exists", () =>
+  it.live("get() returns providers from the explicit managed catalog", () =>
     Effect.gen(function* () {
-      yield* writeCache(fixture)
+      yield* writeCatalog(fixture)
       const state = yield* Ref.make(initialState)
       const result = yield* provided(
         state,
@@ -141,7 +130,7 @@ describe("ModelsDev Service", () => {
     }),
   )
 
-  it.live("get() returns empty catalog when disk empty, fetch disabled, and no bundled snapshot is injected", () =>
+  it.live("get() returns empty catalog when the managed file is missing and no snapshot is injected", () =>
     Effect.gen(function* () {
       const state = yield* Ref.make(initialState)
       const result = yield* provided(
@@ -154,31 +143,23 @@ describe("ModelsDev Service", () => {
     }),
   )
 
-  it.live("get() recovers from a corrupted cache file by fetching a fresh catalog", () =>
+  it.live("get() rejects a corrupted managed file without fetching from the network", () =>
     Effect.gen(function* () {
-      yield* writeCacheText("{")
+      yield* writeCatalogText("{")
       const state = yield* Ref.make({ ...initialState, body: JSON.stringify(fixture2) })
-      const context = yield* Layer.build(buildLayer(state))
-      const result = yield* Effect.acquireUseRelease(
-        Effect.sync(() => {
-          Flag.OPENCODE_DISABLE_MODELS_FETCH = false
-        }),
-        () => ModelsDev.Service.use((s) => s.get()).pipe(Effect.provide(context)),
-        () =>
-          Effect.sync(() => {
-            Flag.OPENCODE_DISABLE_MODELS_FETCH = true
-          }),
+      const result = yield* provided(
+        state,
+        ModelsDev.Service.use((s) => s.get()),
       )
-      expect(result).toEqual(fixture2)
-      expect(yield* Effect.promise(() => readFile(cacheFile, "utf8"))).toBe(JSON.stringify(fixture2))
+      expect(result).toEqual({})
       const final = yield* Ref.get(state)
-      expect(final.calls.length).toBe(1)
+      expect(final.calls).toEqual([])
     }),
   )
 
   it.live("get() is single-flight under concurrent calls", () =>
     Effect.gen(function* () {
-      yield* writeCache(fixture)
+      yield* writeCatalog(fixture)
       const state = yield* Ref.make(initialState)
       const results = yield* provided(
         state,
@@ -193,9 +174,9 @@ describe("ModelsDev Service", () => {
     }),
   )
 
-  it.live("get() caches across calls (later disk writes are ignored until invalidate)", () =>
+  it.live("get() caches across calls", () =>
     Effect.gen(function* () {
-      yield* writeCache(fixture)
+      yield* writeCatalog(fixture)
       const state = yield* Ref.make(initialState)
       const first = yield* provided(
         state,
@@ -203,7 +184,7 @@ describe("ModelsDev Service", () => {
           const svc = yield* ModelsDev.Service
           const a = yield* svc.get()
           // mutate disk between calls — cache should mask the change
-          yield* writeCache(fixture2)
+          yield* writeCatalog(fixture2)
           const b = yield* svc.get()
           return { a, b }
         }),
@@ -213,9 +194,9 @@ describe("ModelsDev Service", () => {
     }),
   )
 
-  it.live("refresh(true) fetches via HttpClient and updates the cache", () =>
+  it.live("refresh(true) is a no-op for the fixed managed catalog", () =>
     Effect.gen(function* () {
-      yield* writeCache(fixture)
+      yield* writeCatalog(fixture)
       const state = yield* Ref.make({ ...initialState, body: JSON.stringify(fixture2) })
       const result = yield* provided(
         state,
@@ -228,18 +209,15 @@ describe("ModelsDev Service", () => {
         }),
       )
       expect(result.before).toEqual(fixture)
-      expect(result.after).toEqual(fixture2)
+      expect(result.after).toEqual(fixture)
       const final = yield* Ref.get(state)
-      expect(final.calls.length).toBe(1)
-      expect(final.calls[0].url).toContain("/api.json")
-      expect(final.calls[0].userAgent).toContain("/cli")
+      expect(final.calls).toEqual([])
     }),
   )
 
-  it.live("refresh(false) skips fetch when on-disk file is fresh", () =>
+  it.live("refresh(false) is a no-op", () =>
     Effect.gen(function* () {
-      // Fresh: mtime within the 5-minute TTL.
-      yield* writeCache(fixture, Date.now() - 1000)
+      yield* writeCatalog(fixture)
       const state = yield* Ref.make({ ...initialState, body: JSON.stringify(fixture2) })
       yield* provided(
         state,
@@ -250,28 +228,9 @@ describe("ModelsDev Service", () => {
     }),
   )
 
-  it.live("refresh(false) fetches when on-disk file is stale", () =>
+  it.live("refresh never contacts the network even when the HTTP service would fail", () =>
     Effect.gen(function* () {
-      // Stale: mtime 10 minutes ago, beyond the 5-minute TTL.
-      yield* writeCache(fixture, Date.now() - 10 * 60 * 1000)
-      const state = yield* Ref.make({ ...initialState, body: JSON.stringify(fixture2) })
-      const after = yield* provided(
-        state,
-        Effect.gen(function* () {
-          const svc = yield* ModelsDev.Service
-          yield* svc.refresh(false)
-          return yield* svc.get()
-        }),
-      )
-      const final = yield* Ref.get(state)
-      expect(final.calls.length).toBe(1)
-      expect(after).toEqual(fixture2)
-    }),
-  )
-
-  it.live("refresh swallows HTTP errors and leaves cache intact", () =>
-    Effect.gen(function* () {
-      yield* writeCache(fixture)
+      yield* writeCatalog(fixture)
       const state = yield* Ref.make({ ...initialState, status: 500, body: "boom" })
       const result = yield* provided(
         state,
@@ -282,9 +241,8 @@ describe("ModelsDev Service", () => {
         }),
       )
       expect(result).toEqual(fixture)
-      // retryTransient retries 5xx, so calls may be > 1.
       const final = yield* Ref.get(state)
-      expect(final.calls.length).toBeGreaterThanOrEqual(1)
+      expect(final.calls).toEqual([])
     }),
   )
 })
