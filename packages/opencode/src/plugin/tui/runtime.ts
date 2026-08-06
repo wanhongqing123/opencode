@@ -251,12 +251,7 @@ function createThemeInstaller(
   return async (file) => {
     const src = Filesystem.resolveFilePath(root, file)
     const name = path.basename(src, path.extname(src))
-    const source_dir = path.dirname(meta.source)
-    const local_dir =
-      path.basename(source_dir) === ".opencode"
-        ? path.join(source_dir, "themes")
-        : path.join(source_dir, ".opencode", "themes")
-    const dest_dir = meta.scope === "local" ? local_dir : path.join(Global.Path.config, "themes")
+    const dest_dir = path.join(Global.Path.config, "themes")
     const dest = path.join(dest_dir, `${name}.json`)
     const stat = await Filesystem.statAsync(src)
     const mtime = stat ? Math.floor(typeof stat.mtimeMs === "bigint" ? Number(stat.mtimeMs) : stat.mtimeMs) : undefined
@@ -813,8 +808,8 @@ async function addExternalPluginEntries(state: RuntimeState, ready: PluginLoad[]
 function defaultPluginOrigin(state: RuntimeState, spec: string): ConfigPlugin.Origin {
   return {
     spec,
-    scope: "local",
-    source: state.api.state.path.config || path.join(state.directory, ".opencode", "tui.json"),
+    scope: "global",
+    source: state.api.state.path.config || path.join(Global.Path.config, "tui.json"),
   }
 }
 

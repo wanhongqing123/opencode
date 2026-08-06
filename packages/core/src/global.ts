@@ -4,33 +4,38 @@ import { xdgData, xdgCache, xdgConfig, xdgState } from "xdg-basedir"
 import os from "os"
 import { Context, Effect, Layer } from "effect"
 import { Flock } from "./util/flock"
-import { Flag } from "./flag/flag"
 import { makeGlobalNode } from "./effect/app-node"
 
 const app = "opencode"
-const data = path.join(xdgData!, app)
-const cache = path.join(xdgCache!, app)
-const config = path.join(xdgConfig!, app)
-const state = path.join(xdgState!, app)
-const tmp = path.join(os.tmpdir(), app)
+const runtimeRoot = process.env.OPENCODE_RUNTIME_ROOT?.trim()
 
-const paths = {
-  get home() {
-    return process.env.OPENCODE_TEST_HOME ?? os.homedir()
-  },
-  data,
-  bin: path.join(cache, "bin"),
-  log: path.join(data, "log"),
-  repos: path.join(data, "repos"),
-  cache,
-  config,
-  state,
-  tmp,
+export function resolvePaths(root?: string) {
+  const managed = root?.trim()
+  const data = managed ? path.join(managed, "data") : path.join(xdgData!, app)
+  const cache = managed ? path.join(managed, "cache") : path.join(xdgCache!, app)
+  const config = managed ? path.join(managed, "config") : path.join(xdgConfig!, app)
+  const state = managed ? path.join(managed, "state") : path.join(xdgState!, app)
+  const tmp = managed ? path.join(managed, "tmp") : path.join(os.tmpdir(), app)
+  return {
+    get home() {
+      return process.env.OPENCODE_TEST_HOME ?? os.homedir()
+    },
+    data,
+    bin: path.join(cache, "bin"),
+    log: path.join(data, "log"),
+    repos: path.join(data, "repos"),
+    cache,
+    config,
+    state,
+    tmp,
+  }
 }
+
+const paths = resolvePaths(runtimeRoot)
 
 export const Path = paths
 
-Flock.setGlobal({ state })
+Flock.setGlobal({ state: Path.state })
 
 await Promise.all([
   fs.mkdir(Path.data, { recursive: true }),
@@ -61,7 +66,7 @@ export function make(input: Partial<Interface> = {}): Interface {
     home: Path.home,
     data: Path.data,
     cache: Path.cache,
-    config: Flag.OPENCODE_CONFIG_DIR ?? Path.config,
+    config: Path.config,
     state: Path.state,
     tmp: Path.tmp,
     bin: Path.bin,

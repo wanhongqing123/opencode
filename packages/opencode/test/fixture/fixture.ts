@@ -17,6 +17,7 @@ import type { InstanceContext } from "../../src/project/instance-context"
 import { InstanceRuntime } from "../../src/project/instance-runtime"
 import { InstanceStore } from "../../src/project/instance-store"
 import { TestLLMServer } from "../lib/llm-server"
+import { Global } from "@opencode-ai/core/global"
 
 const noopBootstrap = Layer.succeed(InstanceBootstrap.Service, InstanceBootstrap.Service.of({ run: Effect.void }))
 export const testInstanceStoreLayer = LayerNode.compile(InstanceStore.node, [
@@ -81,6 +82,30 @@ type TmpDirOptions<T> = {
   init?: (dir: string) => Promise<T>
   dispose?: (dir: string) => Promise<T>
 }
+
+async function installAccountConfig(config: Partial<ConfigV1.Info>) {
+  const file = path.join(Global.Path.config, "opencode.json")
+  await fs.mkdir(Global.Path.config, { recursive: true })
+  const original = await fs.readFile(file).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return undefined
+    throw error
+  })
+  await fs.writeFile(
+    file,
+    JSON.stringify({
+      $schema: "https://opencode.ai/config.json",
+      ...config,
+    }),
+  )
+  return async () => {
+    if (original) {
+      await fs.writeFile(file, original)
+      return
+    }
+    await fs.rm(file, { force: true })
+  }
+}
+
 export async function tmpdir<T>(options?: TmpDirOptions<T>) {
   const dirpath = sanitizePath(path.join(os.tmpdir(), "opencode-test-" + Math.random().toString(36).slice(2)))
   await fs.mkdir(dirpath, { recursive: true })
@@ -92,15 +117,7 @@ export async function tmpdir<T>(options?: TmpDirOptions<T>) {
     await $`git config user.name "Test"`.cwd(dirpath).quiet()
     await $`git commit --allow-empty -m "root commit ${dirpath}"`.cwd(dirpath).quiet()
   }
-  if (options?.config) {
-    await Bun.write(
-      path.join(dirpath, "opencode.json"),
-      JSON.stringify({
-        $schema: "https://opencode.ai/config.json",
-        ...options.config,
-      }),
-    )
-  }
+  const restoreConfig = options?.config ? await installAccountConfig(options.config) : undefined
   const realpath = sanitizePath(await fs.realpath(dirpath))
   const extra = await options?.init?.(realpath)
   const result = {
@@ -108,6 +125,7 @@ export async function tmpdir<T>(options?: TmpDirOptions<T>) {
       try {
         await options?.dispose?.(realpath)
       } finally {
+        await restoreConfig?.()
         if (options?.git) await stop(realpath).catch(() => undefined)
         await clean(realpath).catch(() => undefined)
       }
@@ -151,12 +169,8 @@ export function tmpdirScoped<E = never, R = never>(options?: {
 
     if (options?.config) {
       const resolved = typeof options.config === "function" ? options.config() : options.config
-      yield* Effect.promise(() =>
-        fs.writeFile(
-          path.join(dir, "opencode.json"),
-          JSON.stringify({ $schema: "https://opencode.ai/config.json", ...resolved }),
-        ),
-      )
+      const restore = yield* Effect.promise(() => installAccountConfig(resolved))
+      yield* Effect.addFinalizer(() => Effect.promise(restore))
     }
 
     if (options?.init) yield* options.init(dir)

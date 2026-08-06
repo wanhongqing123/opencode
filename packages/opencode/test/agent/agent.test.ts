@@ -69,14 +69,13 @@ it.instance("build agent has correct default properties", () =>
   }),
 )
 
-it.instance("plan agent denies edits except .opencode/plans/*", () =>
+it.instance("plan agent denies repository edits including legacy .opencode plans", () =>
   Effect.gen(function* () {
     const plan = yield* load((svc) => svc.get("plan"))
     expect(plan).toBeDefined()
     // Wildcard is denied
     expect(evalPerm(plan, "edit")).toBe("deny")
-    // But specific path is allowed
-    expect(Permission.evaluate("edit", ".opencode/plans/foo.md", plan!.permission).action).toBe("allow")
+    expect(Permission.evaluate("edit", ".opencode/plans/foo.md", plan!.permission).action).toBe("deny")
   }),
 )
 
@@ -594,7 +593,7 @@ it.instance(
 )
 
 it.instance(
-  "skill directories are allowed for external_directory",
+  "project .opencode skill directories are not loaded or whitelisted",
   () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
@@ -622,18 +621,17 @@ description: Permission skill.
 
       const build = yield* load((svc) => svc.get("build"))
       const target = path.join(skillDir, "reference", "notes.md")
-      expect(Permission.evaluate("external_directory", target, build!.permission).action).toBe("allow")
+      expect(Permission.evaluate("external_directory", target, build!.permission).action).toBe("ask")
     }),
   { git: true },
 )
 
 it.instance(
-  "project reference directories are allowed for external_directory",
+  "account reference directories are allowed for external_directory",
   () =>
     Effect.gen(function* () {
-      const test = yield* TestInstance
       const build = yield* load((svc) => svc.get("build"))
-      const target = path.resolve(test.directory, "../docs/reference/notes.md")
+      const target = path.resolve(Global.Path.config, "../docs/reference/notes.md")
       expect(Permission.evaluate("external_directory", target, build!.permission).action).toBe("allow")
     }),
   {
