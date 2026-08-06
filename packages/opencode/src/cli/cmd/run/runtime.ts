@@ -19,6 +19,8 @@ import { createRunDemo } from "./demo"
 import { resolveModelInfo, resolveRunTuiConfig, resolveSessionInfo } from "./runtime.boot"
 import { createRuntimeLifecycle } from "./runtime.lifecycle"
 import { createMultiAiCodeImBridge } from "./multi-ai-code-im-bridge"
+import { remoteImPromptParts } from "@opencode-ai/tui/util/remote-im-display"
+import { selectRemoteImImageModel } from "@opencode-ai/tui/util/remote-im-routing"
 import { trace } from "./trace"
 import { cycleVariant, formatModelLabel, resolveSavedVariant, resolveVariant, saveVariant } from "./variant.shared"
 import type { LocalReplayAnchor, LocalReplayRow, RunInput, RunPrompt, RunProvider, StreamCommit } from "./types"
@@ -564,17 +566,40 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
             return
           }
 
-          const result = submit({
-            text: command.text,
-            displayText: command.displayText,
-            parts: [],
-          })
-          imBridge.sendControlResult({
-            requestID: command.requestID,
-            ok: result.ok,
-            text: result.ok ? "queued" : "",
-            ...(!result.ok ? { error: result.error } : {}),
-          })
+          const enqueue = (providers: RunProvider[]) => {
+            const model = command.attachments.length
+              ? selectRemoteImImageModel({ providers, current: state.model })
+              : undefined
+            if (command.attachments.length && !model) {
+              imBridge.sendControlResult({
+                requestID: command.requestID,
+                ok: false,
+                text: "",
+                error: "当前 OpenCode 安装中没有可用的图片理解模型。",
+              })
+              return
+            }
+            const result = submit({
+              text: command.text,
+              displayText: command.displayText,
+              parts: remoteImPromptParts(command.text, command.displayText, command.attachments, {
+                includeModelText: false,
+              }),
+              ...(model ? { model } : {}),
+            })
+            imBridge.sendControlResult({
+              requestID: command.requestID,
+              ok: result.ok,
+              text: result.ok ? "queued" : "",
+              ...(!result.ok ? { error: result.error } : {}),
+            })
+          }
+
+          if (command.attachments.length && state.providers.length === 0) {
+            void modelTask.then((info) => enqueue(info.providers))
+            return
+          }
+          enqueue(state.providers)
         }) ?? (() => {}),
       onSend: (prompt) => {
         state.shown = true
@@ -680,10 +705,11 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
         let outputAnchor: LocalReplayAnchor | undefined
         try {
           const next = await ensureStream()
+          const turnModel = prompt.model ?? state.model
           await next.handle.runPromptTurn({
             agent: state.agent,
-            model: state.model,
-            variant: state.activeVariant,
+            model: turnModel,
+            variant: prompt.model ? undefined : state.activeVariant,
             prompt,
             files: input.files,
             includeFiles,

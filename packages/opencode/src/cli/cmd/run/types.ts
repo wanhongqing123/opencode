@@ -36,6 +36,7 @@ export type RunPrompt = {
   text: string
   displayText?: string
   parts: RunPromptPart[]
+  model?: PromptModel
   mode?: "shell"
   command?: {
     name: string

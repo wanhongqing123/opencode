@@ -49,6 +49,14 @@ describe("parseMultiAiCodeImControlPayload", () => {
         requestId: "req-1",
         text: "wrapped model prompt",
         displayText: "来自 IM 的消息",
+        attachments: [
+          {
+            type: "image",
+            localPath: "/tmp/remote-im/photo.png",
+            mimeType: "image/png",
+            fileName: "photo.png",
+          },
+        ],
       },
       "token",
     )
@@ -58,6 +66,39 @@ describe("parseMultiAiCodeImControlPayload", () => {
       requestID: "req-1",
       text: "wrapped model prompt",
       displayText: "来自 IM 的消息",
+      attachments: [
+        {
+          type: "image",
+          localPath: "/tmp/remote-im/photo.png",
+          mimeType: "image/png",
+          fileName: "photo.png",
+        },
+      ],
+    })
+  })
+
+  test("rejects unsafe or non-image source attachments", () => {
+    const result = parseMultiAiCodeImControlPayload(
+      {
+        token: "token",
+        kind: "control",
+        command: "submit_user_message",
+        requestId: "req-1",
+        text: "wrapped model prompt",
+        attachments: [
+          { type: "image", localPath: "relative.png", mimeType: "image/png" },
+          { type: "image", localPath: "/tmp/note.txt", mimeType: "text/plain" },
+        ],
+      },
+      "token",
+    )
+
+    expect(result).toEqual({
+      command: "submit_user_message",
+      requestID: "req-1",
+      text: "wrapped model prompt",
+      displayText: "wrapped model prompt",
+      attachments: [],
     })
   })
 })

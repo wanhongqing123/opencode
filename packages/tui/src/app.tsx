@@ -84,7 +84,8 @@ import * as TuiAudio from "./audio"
 import { win32DisableProcessedInput, win32FlushInputBuffer } from "./terminal-win32"
 import { destroyRenderer } from "./util/renderer"
 import { cliErrorMessage, errorFormat } from "./util/error"
-import { remoteImPromptParts } from "./util/remote-im-display"
+import { remoteImPromptParts, type RemoteImImageAttachment } from "./util/remote-im-display"
+import { selectRemoteImImageModel } from "./util/remote-im-routing"
 
 registerOpencodeSpinner()
 
@@ -161,6 +162,7 @@ export type TuiInput = {
               requestID: string
               text: string
               displayText: string
+              attachments: RemoteImImageAttachment[]
             }
           | { command: "interrupt"; requestID: string }
           | { command: "compact"; requestID: string }
@@ -575,9 +577,9 @@ function App(props: {
 
       if (command.command === "submit_user_message") {
         const sessionID = route.data.type === "session" ? route.data.sessionID : undefined
-        const selectedModel = local.model.current()
+        const currentModel = local.model.current()
         const agent = local.agent.current()
-        if (!sessionID || !selectedModel || !agent) {
+        if (!sessionID || !currentModel || !agent) {
           props.multiAiCodeImControl?.sendControlResult({
             requestID: command.requestID,
             ok: false,
@@ -587,13 +589,31 @@ function App(props: {
           return
         }
 
+        const selectedModel = command.attachments.length
+          ? selectRemoteImImageModel({
+              providers: sync.data.provider,
+              current: currentModel,
+            })
+          : currentModel
+        if (!selectedModel) {
+          props.multiAiCodeImControl?.sendControlResult({
+            requestID: command.requestID,
+            ok: false,
+            text: "",
+            error: "当前 OpenCode 安装中没有可用的图片理解模型。",
+          })
+          return
+        }
+        const usesCurrentModel =
+          selectedModel.providerID === currentModel.providerID && selectedModel.modelID === currentModel.modelID
+
         void sdk.client.session
           .promptAsync({
             sessionID,
             agent: agent.name,
             model: selectedModel,
-            variant: local.model.variant.current(),
-            parts: remoteImPromptParts(command.text, command.displayText),
+            variant: usesCurrentModel ? local.model.variant.current() : undefined,
+            parts: remoteImPromptParts(command.text, command.displayText, command.attachments),
           })
           .then((result) => {
             if (result.error) throw result.error
