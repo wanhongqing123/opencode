@@ -46,6 +46,12 @@ interface FetchDecompressionError extends Error {
 export const SYNTHETIC_ATTACHMENT_PROMPT = "Attached media from tool result:"
 export { isMedia }
 
+type ModelMessageOptions = {
+  stripMedia?: boolean
+  stripUnsupportedImages?: boolean
+  toolOutputMaxChars?: number
+}
+
 function truncateToolOutput(text: string, maxChars?: number) {
   if (!maxChars || text.length <= maxChars) return text
   const omitted = text.length - maxChars
@@ -131,7 +137,7 @@ function providerMeta(metadata: Record<string, any> | undefined) {
 export const toModelMessagesEffect = Effect.fnUntraced(function* (
   input: WithParts[],
   model: Provider.Model,
-  options?: { stripMedia?: boolean; toolOutputMaxChars?: number },
+  options?: ModelMessageOptions,
 ) {
   const result: UIMessage[] = []
   const toolNames = new Set<string>()
@@ -210,10 +216,14 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
           })
         // text/plain and directory files are converted into text parts, ignore them
         if (part.type === "file" && part.mime !== "text/plain" && part.mime !== "application/x-directory") {
-          if (options?.stripMedia && isMedia(part.mime)) {
+          const unsupportedImage =
+            options?.stripUnsupportedImages && part.mime.startsWith("image/") && !model.capabilities.input.image
+          if ((options?.stripMedia && isMedia(part.mime)) || unsupportedImage) {
             userMessage.parts.push({
               type: "text",
-              text: `[Attached ${part.mime}: ${part.filename ?? "file"}]`,
+              text: unsupportedImage
+                ? `[Attached ${part.mime}: ${part.filename ?? "image"}. Use the vision tool when it is available and visual details are needed.]`
+                : `[Attached ${part.mime}: ${part.filename ?? "file"}]`,
             })
           } else {
             userMessage.parts.push({
@@ -417,7 +427,7 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
 export function toModelMessages(
   input: WithParts[],
   model: Provider.Model,
-  options?: { stripMedia?: boolean; toolOutputMaxChars?: number },
+  options?: ModelMessageOptions,
 ): Promise<ModelMessage[]> {
   return Effect.runPromise(toModelMessagesEffect(input, model, options))
 }

@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test"
-import { selectRemoteImImageModel, type ManagedRouting, type RemoteImProvider } from "../src/util/remote-im-routing"
+import {
+  listImageCapableModels,
+  type ManagedRouting,
+  type ModelCollaborationProvider,
+} from "../src/util/remote-im-routing"
 
 const routing: ManagedRouting = {
   version: 1,
@@ -10,7 +14,7 @@ const routing: ManagedRouting = {
   },
 }
 
-const providers: RemoteImProvider[] = [
+const providers: ModelCollaborationProvider[] = [
   {
     id: "deepseek",
     models: {
@@ -26,34 +30,40 @@ const providers: RemoteImProvider[] = [
   },
 ]
 
-describe("remote IM image model routing", () => {
-  test("routes a text model image turn to the highest-priority vision model", () => {
+describe("image collaborator catalog", () => {
+  test("lists collaborators by managed priority without replacing the text model", () => {
     expect(
-      selectRemoteImImageModel({
+      listImageCapableModels({
         providers,
         current: { providerID: "deepseek", modelID: "deepseek-v4-flash" },
         routing,
       }),
-    ).toEqual({ providerID: "zhipu", modelID: "glm-5v-turbo" })
+    ).toEqual([
+      { providerID: "zhipu", modelID: "glm-5v-turbo" },
+      { providerID: "zhipu", modelID: "glm-4.6v" },
+    ])
   })
 
-  test("keeps an already image-capable current model", () => {
+  test("offers an image-capable current model as the first collaborator", () => {
     expect(
-      selectRemoteImImageModel({
+      listImageCapableModels({
         providers,
         current: { providerID: "zhipu", modelID: "glm-4.6v" },
         routing,
       }),
-    ).toEqual({ providerID: "zhipu", modelID: "glm-4.6v" })
+    ).toEqual([
+      { providerID: "zhipu", modelID: "glm-4.6v" },
+      { providerID: "zhipu", modelID: "glm-5v-turbo" },
+    ])
   })
 
-  test("falls back to the next configured vision model when the first is unavailable", () => {
+  test("omits unavailable collaborators", () => {
     expect(
-      selectRemoteImImageModel({
+      listImageCapableModels({
         providers: [providers[0]!, { id: "zhipu", models: { "glm-4.6v": providers[1]!.models?.["glm-4.6v"]! } }],
         current: { providerID: "deepseek", modelID: "deepseek-v4-flash" },
         routing,
       }),
-    ).toEqual({ providerID: "zhipu", modelID: "glm-4.6v" })
+    ).toEqual([{ providerID: "zhipu", modelID: "glm-4.6v" }])
   })
 })

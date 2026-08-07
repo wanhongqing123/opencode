@@ -14,6 +14,7 @@ import PROMPT_COMPACTION from "./prompt/compaction.txt"
 import PROMPT_EXPLORE from "./prompt/explore.txt"
 import PROMPT_SUMMARY from "./prompt/summary.txt"
 import PROMPT_TITLE from "./prompt/title.txt"
+import PROMPT_VISION from "./prompt/vision.txt"
 import { Permission } from "@/permission"
 import { mergeDeep, pipe, sortBy, values } from "remeda"
 import { Global } from "@opencode-ai/core/global"
@@ -260,6 +261,22 @@ const layer = Layer.effect(
               user,
             ),
             prompt: PROMPT_SUMMARY,
+          },
+          vision: {
+            name: "vision",
+            description: "Internal image-analysis collaborator used without changing the primary session model.",
+            mode: "primary",
+            native: true,
+            hidden: true,
+            prompt: PROMPT_VISION,
+            permission: Permission.merge(
+              defaults,
+              user,
+              Permission.fromConfig({
+                "*": "deny",
+              }),
+            ),
+            options: {},
           },
         }
 

@@ -112,6 +112,36 @@ function basePart(messageID: string, id: string) {
 }
 
 describe("session.message-v2.toModelMessage", () => {
+  test("replaces unsupported image input with a vision collaboration hint", async () => {
+    const messageID = "m-image"
+    const input: SessionV1.WithParts[] = [
+      {
+        info: userInfo(messageID),
+        parts: [
+          {
+            ...basePart(messageID, "p-image"),
+            type: "file",
+            mime: "image/png",
+            filename: "screen.png",
+            url: "data:image/png;base64,AA==",
+          },
+        ] as SessionV1.Part[],
+      },
+    ]
+
+    expect(await MessageV2.toModelMessages(input, model, { stripUnsupportedImages: true })).toStrictEqual([
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: "[Attached image/png: screen.png. Use the vision tool when it is available and visual details are needed.]",
+          },
+        ],
+      },
+    ])
+  })
+
   test("filters out messages with no parts", async () => {
     const input: SessionV1.WithParts[] = [
       {

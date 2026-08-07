@@ -20,7 +20,6 @@ import { resolveModelInfo, resolveRunTuiConfig, resolveSessionInfo } from "./run
 import { createRuntimeLifecycle } from "./runtime.lifecycle"
 import { createMultiAiCodeImBridge } from "./multi-ai-code-im-bridge"
 import { remoteImPromptParts } from "@opencode-ai/tui/util/remote-im-display"
-import { selectRemoteImImageModel } from "@opencode-ai/tui/util/remote-im-routing"
 import { trace } from "./trace"
 import { cycleVariant, formatModelLabel, resolveSavedVariant, resolveVariant, saveVariant } from "./variant.shared"
 import type { LocalReplayAnchor, LocalReplayRow, RunInput, RunPrompt, RunProvider, StreamCommit } from "./types"
@@ -566,19 +565,7 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
             return
           }
 
-          const enqueue = (providers: RunProvider[]) => {
-            const model = command.attachments.length
-              ? selectRemoteImImageModel({ providers, current: state.model })
-              : undefined
-            if (command.attachments.length && !model) {
-              imBridge.sendControlResult({
-                requestID: command.requestID,
-                ok: false,
-                text: "",
-                error: "当前 OpenCode 安装中没有可用的图片理解模型。",
-              })
-              return
-            }
+          const enqueue = () => {
             const result = submit({
               text: command.text,
               displayText: command.displayText,
@@ -587,7 +574,6 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
               }),
               ...(command.replyID ? { remoteImReplyID: command.replyID } : {}),
               ...(command.taskID ? { remoteImTaskID: command.taskID } : {}),
-              ...(model ? { model } : {}),
             })
             imBridge.sendControlResult({
               requestID: command.requestID,
@@ -597,11 +583,7 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
             })
           }
 
-          if (command.attachments.length && state.providers.length === 0) {
-            void modelTask.then((info) => enqueue(info.providers))
-            return
-          }
-          enqueue(state.providers)
+          enqueue()
         }) ?? (() => {}),
       onSend: (prompt) => {
         state.shown = true

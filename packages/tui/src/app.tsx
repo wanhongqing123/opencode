@@ -85,7 +85,6 @@ import { win32DisableProcessedInput, win32FlushInputBuffer } from "./terminal-wi
 import { destroyRenderer } from "./util/renderer"
 import { cliErrorMessage, errorFormat } from "./util/error"
 import { remoteImPromptParts, type RemoteImImageAttachment } from "./util/remote-im-display"
-import { selectRemoteImImageModel } from "./util/remote-im-routing"
 
 registerOpencodeSpinner()
 
@@ -594,24 +593,6 @@ function App(props: {
           return
         }
 
-        const selectedModel = command.attachments.length
-          ? selectRemoteImImageModel({
-              providers: sync.data.provider,
-              current: currentModel,
-            })
-          : currentModel
-        if (!selectedModel) {
-          props.multiAiCodeImControl?.sendControlResult({
-            requestID: command.requestID,
-            ok: false,
-            text: "",
-            error: "当前 OpenCode 安装中没有可用的图片理解模型。",
-          })
-          return
-        }
-        const usesCurrentModel =
-          selectedModel.providerID === currentModel.providerID && selectedModel.modelID === currentModel.modelID
-
         if (command.taskID) {
           props.multiAiCodeImControl?.registerRemoteTask?.({
             taskID: command.taskID,
@@ -627,8 +608,8 @@ function App(props: {
           .promptAsync({
             sessionID,
             agent: agent.name,
-            model: selectedModel,
-            variant: usesCurrentModel ? local.model.variant.current() : undefined,
+            model: currentModel,
+            variant: local.model.variant.current(),
             parts: remoteImPromptParts(command.text, command.displayText, command.attachments),
           })
           .then((result) => {

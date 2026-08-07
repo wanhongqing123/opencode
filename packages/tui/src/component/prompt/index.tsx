@@ -56,7 +56,6 @@ import { usePromptWorkspace } from "./workspace"
 import { usePromptMove } from "./move"
 import { extractLeadingLocalAttachmentPath, readLocalAttachment } from "./local-attachment"
 import { useLocation } from "../../context/location"
-import { selectImageCapableModel } from "../../util/remote-im-routing"
 
 registerOpencodeSpinner()
 
@@ -999,18 +998,7 @@ export function Prompt(props: PromptProps) {
       ...store.prompt.parts.filter((part) => part.type !== "text"),
       ...(implicitFilePart ? [implicitFilePart] : []),
     ]
-    const hasImage = nonTextParts.some((part) => part.type === "file" && part.mime.startsWith("image/"))
-    const selectedModel = hasImage
-      ? selectImageCapableModel({ providers: sync.data.provider, current: currentModel })
-      : currentModel
-    if (!selectedModel) {
-      toast.show({
-        variant: "warning",
-        message: "No image-capable managed model is available. Restart Multi-AI Code or repair the installation.",
-        duration: 3000,
-      })
-      return false
-    }
+    const selectedModel = currentModel
 
     const workspaceSession = props.sessionID ? sync.session.get(props.sessionID) : undefined
     const workspaceID = workspaceSession?.workspaceID
@@ -1027,9 +1015,7 @@ export function Prompt(props: PromptProps) {
       return false
     }
 
-    const usesCurrentModel =
-      selectedModel.providerID === currentModel.providerID && selectedModel.modelID === currentModel.modelID
-    const variant = usesCurrentModel ? local.model.variant.current() : undefined
+    const variant = local.model.variant.current()
     let sessionID = props.sessionID
     let finishMoveProgress = false
     if (sessionID == null) {
