@@ -28,6 +28,13 @@ export const RETRY_BACKOFF_FACTOR = 2
 export const RETRY_MAX_DELAY_NO_HEADERS = 30_000 // 30 seconds
 export const RETRY_MAX_DELAY = 2_147_483_647 // max 32-bit signed integer for setTimeout
 
+const PERMANENT_API_ERROR_CODES = new Set([
+  "1113", // Zhipu: insufficient balance or no matching resource package
+  "1311", // Zhipu: model is not available in the current subscription
+  "billing_hard_limit_reached",
+  "insufficient_quota",
+])
+
 function cap(ms: number) {
   return Math.min(ms, RETRY_MAX_DELAY)
 }
@@ -70,6 +77,7 @@ export function retryable(error: Err, provider: string) {
   if (SessionV1.ContextOverflowError.isInstance(error)) return undefined
   if (SessionV1.APIError.isInstance(error)) {
     const status = error.data.statusCode
+    if (isPermanentAPIError(error)) return undefined
     // 5xx errors are transient server failures and should always be retried,
     // even when the provider SDK doesn't explicitly mark them as retryable.
     if (!error.data.isRetryable && !(status !== undefined && status >= 500)) return undefined
@@ -149,6 +157,25 @@ export function retryable(error: Err, provider: string) {
     return { message: "Rate Limited" }
   }
   return undefined
+}
+
+export function isPermanentAPIError(error: SessionV1.APIError) {
+  if (error.data.statusCode === 402) return true
+
+  const body = parseJSON(error.data.responseBody)
+  const code = str(body?.code ?? body?.error?.code).toLowerCase()
+  if (PERMANENT_API_ERROR_CODES.has(code)) return true
+
+  const text = `${error.data.message}\n${error.data.responseBody ?? ""}`.toLowerCase()
+  return [
+    "insufficient balance",
+    "credit balance is too low",
+    "not enough credits",
+    "payment required",
+    "余额不足",
+    "无可用资源包",
+    "当前订阅套餐暂未开放",
+  ].some((value) => text.includes(value))
 }
 
 function str(value: unknown) {
