@@ -35,6 +35,8 @@ export type RunPrompt = {
   partID?: string
   text: string
   displayText?: string
+  remoteImReplyID?: string
+  remoteImTaskID?: string
   parts: RunPromptPart[]
   model?: PromptModel
   mode?: "shell"

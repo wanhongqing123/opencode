@@ -82,7 +82,7 @@ describe("tui thread", () => {
   })
 
   test("forwards only the final assistant text after the session becomes idle", () => {
-    const sent: Array<{ text: string; replyID: string; messageID?: string; partID?: string }> = []
+    const sent: Array<{ text: string; replyID?: string; messageID?: string; partID?: string }> = []
     const handleEvent = createMultiAiCodeImTuiEventHandler({
       sendAssistantText() {},
       sendAssistantFinal(input) {
@@ -206,6 +206,100 @@ describe("tui thread", () => {
     ])
   })
 
+  test("reports source task activity and preserves task identity through the terminal event", () => {
+    const activity: string[] = []
+    const progress: Array<{ text: string; taskID?: string }> = []
+    const final: Array<{ text: string; replyID?: string; taskID?: string }> = []
+    const forgotten: string[] = []
+    const handleEvent = createMultiAiCodeImTuiEventHandler({
+      sendTaskActivity(input) {
+        activity.push(input.taskID)
+      },
+      remoteTaskID(replyID) {
+        return replyID === "rim-lifecycle" ? "task-lifecycle" : undefined
+      },
+      forgetRemoteTask(replyID) {
+        forgotten.push(replyID)
+      },
+      sendAssistantText(input) {
+        progress.push({ text: input.text, taskID: input.taskID })
+      },
+      sendAssistantFinal(input) {
+        final.push({ text: input.text, replyID: input.replyID, taskID: input.taskID })
+      },
+      sendTurnError() {},
+      onControlCommand() {
+        return () => {}
+      },
+      sendControlResult() {},
+      close() {},
+    })
+
+    handleEvent({
+      payload: {
+        type: "message.updated",
+        properties: { sessionID: "ses_lifecycle", info: { id: "remote_user", role: "user" } },
+      },
+    } as never)
+    handleEvent({
+      payload: {
+        type: "message.part.updated",
+        properties: {
+          sessionID: "ses_lifecycle",
+          part: {
+            id: "remote_prompt",
+            messageID: "remote_user",
+            type: "text",
+            text: 'Opening marker: <remote-im-reply id="rim-lifecycle">',
+          },
+        },
+      },
+    } as never)
+    handleEvent({
+      payload: {
+        type: "message.updated",
+        properties: {
+          sessionID: "ses_lifecycle",
+          info: { id: "remote_assistant", role: "assistant", parentID: "remote_user" },
+        },
+      },
+    } as never)
+    handleEvent({
+      payload: {
+        type: "session.status",
+        properties: { sessionID: "ses_lifecycle", status: { type: "busy" } },
+      },
+    } as never)
+    handleEvent({
+      payload: {
+        type: "message.part.updated",
+        properties: {
+          sessionID: "ses_lifecycle",
+          part: {
+            id: "remote_final",
+            messageID: "remote_assistant",
+            type: "text",
+            text: "source-authored result",
+            time: { end: Date.now() },
+          },
+        },
+      },
+    } as never)
+    handleEvent({
+      payload: {
+        type: "session.status",
+        properties: { sessionID: "ses_lifecycle", status: { type: "idle" } },
+      },
+    } as never)
+
+    expect(activity).toEqual(["task-lifecycle"])
+    expect(progress).toEqual([{ text: "source-authored result", taskID: "task-lifecycle" }])
+    expect(final).toEqual([
+      { text: "source-authored result", replyID: "rim-lifecycle", taskID: "task-lifecycle" },
+    ])
+    expect(forgotten).toEqual(["rim-lifecycle"])
+  })
+
   test("does not forward a local turn while a remote IM reply is not active", () => {
     const sent: string[] = []
     const handleEvent = createMultiAiCodeImTuiEventHandler({
@@ -257,7 +351,7 @@ describe("tui thread", () => {
 
   test("does not forward markerless assistant text when the session ends with an error", () => {
     const final: string[] = []
-    const errors: Array<{ text: string; replyID: string }> = []
+    const errors: Array<{ text: string; replyID?: string }> = []
     const handleEvent = createMultiAiCodeImTuiEventHandler({
       sendAssistantText() {},
       sendAssistantFinal(input) {
@@ -341,7 +435,7 @@ describe("tui thread", () => {
   })
 
   test("forwards only terminal session errors after the session becomes idle", () => {
-    const sent: Array<{ text: string; replyID: string; messageID?: string }> = []
+    const sent: Array<{ text: string; replyID?: string; messageID?: string }> = []
     const handleEvent = createMultiAiCodeImTuiEventHandler({
       sendAssistantText() {},
       sendAssistantFinal() {},
@@ -436,7 +530,7 @@ describe("tui thread", () => {
   })
 
   test("forwards a remote error even when no assistant message was created", () => {
-    const sent: Array<{ text: string; replyID: string }> = []
+    const sent: Array<{ text: string; replyID?: string }> = []
     const handleEvent = createMultiAiCodeImTuiEventHandler({
       sendAssistantText() {},
       sendAssistantFinal() {},
@@ -490,7 +584,7 @@ describe("tui thread", () => {
   })
 
   test("does not bind an earlier local error to a later remote request", () => {
-    const final: Array<{ text: string; replyID: string }> = []
+    const final: Array<{ text: string; replyID?: string }> = []
     const errors: string[] = []
     const handleEvent = createMultiAiCodeImTuiEventHandler({
       sendAssistantText() {},
@@ -572,7 +666,7 @@ describe("tui thread", () => {
   })
 
   test("correlates a remote reply through assistant parentID instead of session timing", () => {
-    const sent: Array<{ text: string; replyID: string }> = []
+    const sent: Array<{ text: string; replyID?: string }> = []
     const handleEvent = createMultiAiCodeImTuiEventHandler({
       sendAssistantText() {},
       sendAssistantFinal(input) {
@@ -671,7 +765,7 @@ describe("tui thread", () => {
   })
 
   test("handles reordered events and reply markers split across assistant messages", () => {
-    const sent: Array<{ text: string; replyID: string }> = []
+    const sent: Array<{ text: string; replyID?: string }> = []
     const handleEvent = createMultiAiCodeImTuiEventHandler({
       sendAssistantText() {},
       sendAssistantFinal(input) {
@@ -768,7 +862,7 @@ describe("tui thread", () => {
   })
 
   test("uses the latest assistant message with text when a trailing assistant message is empty", () => {
-    const sent: Array<{ text: string; replyID: string }> = []
+    const sent: Array<{ text: string; replyID?: string }> = []
     const handleEvent = createMultiAiCodeImTuiEventHandler({
       sendAssistantText() {},
       sendAssistantFinal(input) {

@@ -585,6 +585,8 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
               parts: remoteImPromptParts(command.text, command.displayText, command.attachments, {
                 includeModelText: false,
               }),
+              ...(command.replyID ? { remoteImReplyID: command.replyID } : {}),
+              ...(command.taskID ? { remoteImTaskID: command.taskID } : {}),
               ...(model ? { model } : {}),
             })
             imBridge.sendControlResult({
@@ -608,6 +610,12 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
           : prompt
         state.history.push(displayPrompt)
         if (prompt.mode !== "shell") {
+          if (prompt.remoteImTaskID) {
+            imBridge?.sendTaskStarted?.({
+              taskID: prompt.remoteImTaskID,
+              ...(prompt.remoteImReplyID ? { replyID: prompt.remoteImReplyID } : {}),
+            })
+          }
           rememberLocal({
             kind: "user",
             text: prompt.displayText ?? prompt.text,
@@ -703,6 +711,7 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
         await state.switching?.catch(() => {})
 
         let outputAnchor: LocalReplayAnchor | undefined
+        const remoteAssistantOutputs: Array<{ text: string; messageID: string; partID: string }> = []
         try {
           const next = await ensureStream()
           const turnModel = prompt.model ?? state.model
@@ -716,9 +725,43 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
             onVisibleOutput: (anchor) => {
               outputAnchor = anchor
             },
-            onAssistantOutput: (output) => imBridge?.sendAssistantText(output),
+            onTaskActivity: () => {
+              if (prompt.remoteImTaskID) {
+                imBridge?.sendTaskActivity?.({ taskID: prompt.remoteImTaskID })
+              }
+            },
+            onAssistantProgress: (output) => {
+              if (prompt.remoteImTaskID) {
+                imBridge?.sendAssistantText({ ...output, taskID: prompt.remoteImTaskID })
+              }
+            },
+            onAssistantOutput: (output) => {
+              remoteAssistantOutputs.push(output)
+            },
             signal,
           })
+          if (prompt.remoteImTaskID || prompt.remoteImReplyID) {
+            const text = remoteAssistantOutputs
+              .map((output) => output.text)
+              .filter(Boolean)
+              .join("\n")
+            const last = remoteAssistantOutputs.at(-1)
+            if (text.trim()) {
+              imBridge?.sendAssistantFinal({
+                text,
+                ...(prompt.remoteImReplyID ? { replyID: prompt.remoteImReplyID } : {}),
+                ...(prompt.remoteImTaskID ? { taskID: prompt.remoteImTaskID } : {}),
+                ...(last ? { messageID: last.messageID, partID: last.partID } : {}),
+              })
+            } else {
+              imBridge?.sendTurnError({
+                text: "OpenCode turn completed without a final assistant response.",
+                ...(prompt.remoteImReplyID ? { replyID: prompt.remoteImReplyID } : {}),
+                ...(prompt.remoteImTaskID ? { taskID: prompt.remoteImTaskID } : {}),
+                ...(prompt.messageID ? { messageID: prompt.messageID } : {}),
+              })
+            }
+          }
           if (prompt.messageID) {
             state.localRows = state.localRows.filter(
               (row) => row.commit.kind !== "user" || row.commit.messageID !== prompt.messageID,
@@ -727,6 +770,14 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
           includeFiles = false
         } catch (error) {
           if (signal.aborted || footer.isClosed) {
+            if (prompt.remoteImTaskID || prompt.remoteImReplyID) {
+              imBridge?.sendTurnError({
+                text: "OpenCode turn was interrupted.",
+                ...(prompt.remoteImReplyID ? { replyID: prompt.remoteImReplyID } : {}),
+                ...(prompt.remoteImTaskID ? { taskID: prompt.remoteImTaskID } : {}),
+                ...(prompt.messageID ? { messageID: prompt.messageID } : {}),
+              })
+            }
             return
           }
 
@@ -742,6 +793,14 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
           } as const
           rememberLocal(commit, outputAnchor)
           footer.append(commit)
+          if (prompt.remoteImTaskID || prompt.remoteImReplyID) {
+            imBridge?.sendTurnError({
+              text,
+              ...(prompt.remoteImReplyID ? { replyID: prompt.remoteImReplyID } : {}),
+              ...(prompt.remoteImTaskID ? { taskID: prompt.remoteImTaskID } : {}),
+              ...(prompt.messageID ? { messageID: prompt.messageID } : {}),
+            })
+          }
         }
       },
     })

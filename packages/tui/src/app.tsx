@@ -148,6 +148,9 @@ export type TuiInput = {
   headers?: RequestInit["headers"]
   events?: EventSource
   multiAiCodeImControl?: {
+    sendTaskStarted?(input: { replyID?: string; taskID: string }): void
+    registerRemoteTask?(input: { replyID?: string; taskID: string }): void
+    forgetRemoteTask?(replyID: string): void
     sendControlResult(input: { requestID: string; ok: boolean; text: string; error?: string }): void
     onControlCommand(
       handler: (
@@ -163,6 +166,8 @@ export type TuiInput = {
               text: string
               displayText: string
               attachments: RemoteImImageAttachment[]
+              replyID?: string
+              taskID?: string
             }
           | { command: "interrupt"; requestID: string }
           | { command: "compact"; requestID: string }
@@ -607,6 +612,17 @@ function App(props: {
         const usesCurrentModel =
           selectedModel.providerID === currentModel.providerID && selectedModel.modelID === currentModel.modelID
 
+        if (command.taskID) {
+          props.multiAiCodeImControl?.registerRemoteTask?.({
+            taskID: command.taskID,
+            ...(command.replyID ? { replyID: command.replyID } : {}),
+          })
+          props.multiAiCodeImControl?.sendTaskStarted?.({
+            taskID: command.taskID,
+            ...(command.replyID ? { replyID: command.replyID } : {}),
+          })
+        }
+
         void sdk.client.session
           .promptAsync({
             sessionID,
@@ -624,6 +640,7 @@ function App(props: {
             })
           })
           .catch((error) => {
+            if (command.replyID) props.multiAiCodeImControl?.forgetRemoteTask?.(command.replyID)
             props.multiAiCodeImControl?.sendControlResult({
               requestID: command.requestID,
               ok: false,

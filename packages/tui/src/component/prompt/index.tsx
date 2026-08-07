@@ -54,8 +54,9 @@ import { OPENCODE_BASE_MODE, useBindings, useCommandShortcut, useLeaderActive, u
 import { useTuiConfig } from "../../config"
 import { usePromptWorkspace } from "./workspace"
 import { usePromptMove } from "./move"
-import { readLocalAttachment } from "./local-attachment"
+import { extractLeadingLocalAttachmentPath, readLocalAttachment } from "./local-attachment"
 import { useLocation } from "../../context/location"
+import { selectImageCapableModel } from "../../util/remote-im-routing"
 
 registerOpencodeSpinner()
 
@@ -960,9 +961,53 @@ export function Prompt(props: PromptProps) {
       void exit()
       return true
     }
-    const selectedModel = local.model.current()
-    if (!selectedModel) {
+    const currentModel = local.model.current()
+    if (!currentModel) {
       void promptModelWarning()
+      return false
+    }
+
+    const expandedInputText = expandTrackedPastedText(
+      store.prompt.input,
+      input.extmarks.getAllForTypeId(promptPartTypeId).flatMap((extmark) => {
+        const partIndex = store.extmarkToPartIndex.get(extmark.id)
+        const part = partIndex === undefined ? undefined : store.prompt.parts[partIndex]
+        if (part?.type !== "text") return []
+        return [{ start: extmark.start, end: extmark.end, text: part.text }]
+      }),
+    )
+    const leadingAttachment =
+      store.mode === "normal"
+        ? extractLeadingLocalAttachmentPath(expandedInputText, terminalEnvironment.platform)
+        : undefined
+    const loadedAttachment = leadingAttachment ? await readLocalAttachment(leadingAttachment.path) : undefined
+    const implicitFilePart: Omit<FilePart, "id" | "messageID" | "sessionID"> | undefined =
+      loadedAttachment?.type === "binary"
+        ? {
+            type: "file",
+            mime: loadedAttachment.mime,
+            filename: path.basename(leadingAttachment!.path),
+            url: `data:${loadedAttachment.mime};base64,${Buffer.from(loadedAttachment.content).toString("base64")}`,
+          }
+        : undefined
+    const implicitLabel = implicitFilePart?.mime === "application/pdf" ? "[PDF 1]" : "[Image 1]"
+    const inputText = implicitFilePart
+      ? [implicitLabel, leadingAttachment?.rest].filter(Boolean).join(" ")
+      : expandedInputText
+    const nonTextParts = [
+      ...store.prompt.parts.filter((part) => part.type !== "text"),
+      ...(implicitFilePart ? [implicitFilePart] : []),
+    ]
+    const hasImage = nonTextParts.some((part) => part.type === "file" && part.mime.startsWith("image/"))
+    const selectedModel = hasImage
+      ? selectImageCapableModel({ providers: sync.data.provider, current: currentModel })
+      : currentModel
+    if (!selectedModel) {
+      toast.show({
+        variant: "warning",
+        message: "No image-capable managed model is available. Restart Multi-AI Code or repair the installation.",
+        duration: 3000,
+      })
       return false
     }
 
@@ -981,14 +1026,16 @@ export function Prompt(props: PromptProps) {
       return false
     }
 
-    const variant = local.model.variant.current()
+    const usesCurrentModel =
+      selectedModel.providerID === currentModel.providerID && selectedModel.modelID === currentModel.modelID
+    const variant = usesCurrentModel ? local.model.variant.current() : undefined
     let sessionID = props.sessionID
     let finishMoveProgress = false
     if (sessionID == null) {
       const selectedWorkspace = workspace.selection()
       const workspaceID = selectedWorkspace?.type === "existing" ? selectedWorkspace.workspaceID : undefined
 
-      const directory = await move.getDirectory(store.prompt.input)
+      const directory = await move.getDirectory(inputText)
       if (move.pending() && !directory) return false
       finishMoveProgress = Boolean(move.progress())
 
@@ -1017,19 +1064,6 @@ export function Prompt(props: PromptProps) {
 
       sessionID = res.data.id
     }
-
-    const inputText = expandTrackedPastedText(
-      store.prompt.input,
-      input.extmarks.getAllForTypeId(promptPartTypeId).flatMap((extmark) => {
-        const partIndex = store.extmarkToPartIndex.get(extmark.id)
-        const part = partIndex === undefined ? undefined : store.prompt.parts[partIndex]
-        if (part?.type !== "text") return []
-        return [{ start: extmark.start, end: extmark.end, text: part.text }]
-      }),
-    )
-
-    // Filter out text parts (pasted content) since they're now expanded inline
-    const nonTextParts = store.prompt.parts.filter((part) => part.type !== "text")
 
     // Capture mode before it gets reset
     const currentMode = store.mode
