@@ -10,7 +10,7 @@ import { GlobTool } from "./glob"
 import { GrepTool } from "./grep"
 import { ReadTool } from "./read"
 import { TaskTool } from "./task"
-import { VisionTool } from "./vision"
+import { availableVisionCandidates, VisionTool } from "./vision"
 import { Database } from "@opencode-ai/core/database/database"
 import { TodoWriteTool } from "./todo"
 import { WebFetchTool } from "./webfetch"
@@ -290,7 +290,12 @@ const layer = Layer.effect(
     })
 
     const tools: Interface["tools"] = Effect.fn("ToolRegistry.tools")(function* (input) {
-      const visionModels = listImageCapableModels({ providers: Object.values(yield* provider.list()) })
+      const visionModels = availableVisionCandidates(
+        listImageCapableModels({
+          providers: Object.values(yield* provider.list()),
+          current: { providerID: input.providerID, modelID: input.modelID },
+        }),
+      )
       const filtered = (yield* all()).filter((tool) => {
         if (tool.id === VisionTool.id) return input.agent.name !== "vision" && visionModels.length > 0
         if (tool.id === WebSearchTool.id) {

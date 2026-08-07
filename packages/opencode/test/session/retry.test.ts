@@ -284,6 +284,58 @@ describe("session.retry.retryable", () => {
     expect(SessionRetry.retryable(error, retryProvider)).toBeUndefined()
   })
 
+  test("does not retry Zhipu balance errors even when the SDK marks 429 retryable", () => {
+    const error = Schema.decodeUnknownSync(SessionV1.APIError.Schema)(
+      new SessionV1.APIError({
+        message: "余额不足或无可用资源包,请充值。",
+        isRetryable: true,
+        statusCode: 429,
+        responseBody: JSON.stringify({ error: { code: "1113", message: "余额不足或无可用资源包,请充值。" } }),
+      }).toObject(),
+    )
+
+    expect(SessionRetry.retryable(error, "zhipu")).toBeUndefined()
+  })
+
+  test("does not retry permanent subscription permission errors", () => {
+    const error = Schema.decodeUnknownSync(SessionV1.APIError.Schema)(
+      new SessionV1.APIError({
+        message: "当前订阅套餐暂未开放GLM-5V-Turbo权限",
+        isRetryable: true,
+        statusCode: 429,
+        responseBody: JSON.stringify({ error: { code: "1311" } }),
+      }).toObject(),
+    )
+
+    expect(SessionRetry.retryable(error, "zhipu")).toBeUndefined()
+  })
+
+  test("does not retry payment required responses", () => {
+    const error = Schema.decodeUnknownSync(SessionV1.APIError.Schema)(
+      new SessionV1.APIError({
+        message: "Insufficient Balance",
+        isRetryable: true,
+        statusCode: 402,
+      }).toObject(),
+    )
+
+    expect(SessionRetry.retryable(error, "deepseek")).toBeUndefined()
+  })
+
+  test("continues retrying ordinary 429 rate limits", () => {
+    const error = Schema.decodeUnknownSync(SessionV1.APIError.Schema)(
+      new SessionV1.APIError({
+        message: "Rate limit exceeded, please try again later",
+        isRetryable: true,
+        statusCode: 429,
+      }).toObject(),
+    )
+
+    expect(SessionRetry.retryable(error, retryProvider)).toEqual({
+      message: "Rate limit exceeded, please try again later",
+    })
+  })
+
   test("retries ZlibError decompression failures", () => {
     const error = Schema.decodeUnknownSync(SessionV1.APIError.Schema)(
       new SessionV1.APIError({
