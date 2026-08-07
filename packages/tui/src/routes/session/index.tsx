@@ -88,6 +88,7 @@ import {
   SESSION_SCROLLBAR_VISIBLE_KEY,
   shouldApplySessionScrollbarDefault,
 } from "./scrollbar"
+import { createWin32MovedCellRepaint } from "../../terminal-win32"
 
 addDefaultParsers(parsers.parsers)
 
@@ -260,6 +261,7 @@ export function Session() {
   })
 
   const dimensions = useTerminalDimensions()
+  const terminalEnvironment = useTuiTerminalEnvironment()
   const [sidebar, setSidebar] = kv.signal<"auto" | "hide">("sidebar", "hide")
   const [sidebarOpen, setSidebarOpen] = createSignal(false)
   const [conceal, setConceal] = createSignal(true)
@@ -373,6 +375,22 @@ export function Session() {
   const keymap = useOpencodeKeymap()
   const dialog = useDialog()
   const renderer = useRenderer()
+
+  if (terminalEnvironment.platform === "win32") {
+    const repaintMovedCells = createWin32MovedCellRepaint(renderer, terminalEnvironment.platform)
+    const observeScrollLayout = () => {
+      if (!scroll || scroll.isDestroyed) return
+      repaintMovedCells({
+        scrollTop: scroll.scrollTop,
+        scrollHeight: scroll.scrollHeight,
+        width: scroll.width,
+        height: scroll.height,
+        scrollbarVisible: showScrollbar(),
+      })
+    }
+    renderer.on("frame", observeScrollLayout)
+    onCleanup(() => renderer.off("frame", observeScrollLayout))
+  }
 
   event.on("session.status", (evt) => {
     if (evt.properties.sessionID !== route.sessionID) return

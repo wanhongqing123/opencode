@@ -86,6 +86,10 @@ type Wait = {
   live: boolean
   onVisibleOutput?: (anchor: LocalReplayAnchor) => void
   onAssistantOutput?: (output: { text: string; messageID: string; partID: string }) => void
+  onAssistantProgress?: (output: { text: string; messageID: string; partID: string }) => void
+  onTaskActivity?: () => void
+  lastTaskActivityAt: number
+  progressText: Map<string, string>
   assistantText: Map<string, { messageID: string; text: string }>
   done: Deferred.Deferred<void, unknown>
 }
@@ -99,6 +103,8 @@ export type SessionTurnInput = {
   includeFiles: boolean
   onVisibleOutput?: (anchor: LocalReplayAnchor) => void
   onAssistantOutput?: (output: { text: string; messageID: string; partID: string }) => void
+  onAssistantProgress?: (output: { text: string; messageID: string; partID: string }) => void
+  onTaskActivity?: () => void
   signal?: AbortSignal
 }
 
@@ -910,6 +916,14 @@ function createLayer(input: StreamInput) {
           trackBlocker(event)
 
           const wait = state.wait
+          if (wait && active(event, input.sessionID) && Date.now() - wait.lastTaskActivityAt >= 30_000) {
+            wait.lastTaskActivityAt = Date.now()
+            try {
+              wait.onTaskActivity?.()
+            } catch {
+              // Keep source lifecycle observers isolated from the TUI stream.
+            }
+          }
           if (
             wait &&
             event.type === "message.part.updated" &&
@@ -930,6 +944,29 @@ function createLayer(input: StreamInput) {
             limits: input.limits(),
           })
           state.data = next.data
+          if (
+            wait &&
+            event.type === "message.part.updated" &&
+            event.properties.part.sessionID === input.sessionID &&
+            event.properties.part.type === "text" &&
+            event.properties.part.time?.end !== undefined &&
+            state.data.role.get(event.properties.part.messageID) === "assistant"
+          ) {
+            const part = event.properties.part
+            const previous = wait.progressText.get(part.id)
+            if (part.text.trim() && previous !== part.text) {
+              wait.progressText.set(part.id, part.text)
+              try {
+                wait.onAssistantProgress?.({
+                  text: part.text,
+                  messageID: part.messageID,
+                  partID: part.id,
+                })
+              } catch {
+                // Progress delivery must never interrupt the model turn.
+              }
+            }
+          }
           if (
             wait &&
             event.type === "message.part.delta" &&
@@ -1246,6 +1283,10 @@ function createLayer(input: StreamInput) {
             live: false,
             onVisibleOutput: next.onVisibleOutput,
             onAssistantOutput: next.onAssistantOutput,
+            onAssistantProgress: next.onAssistantProgress,
+            onTaskActivity: next.onTaskActivity,
+            lastTaskActivityAt: Date.now(),
+            progressText: new Map(),
             assistantText: new Map(),
             done: yield* Deferred.make<void, unknown>(),
           }

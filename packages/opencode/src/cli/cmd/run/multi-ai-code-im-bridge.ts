@@ -9,9 +9,20 @@ export type MultiAiCodeImAttachment = {
 }
 
 export type MultiAiCodeImBridge = {
-  sendAssistantText(input: { text: string; messageID?: string; partID?: string }): void
-  sendAssistantFinal(input: { text: string; replyID: string; messageID?: string; partID?: string }): void
-  sendTurnError(input: { text: string; replyID: string; messageID?: string }): void
+  sendTaskStarted?(input: { replyID?: string; taskID: string }): void
+  sendTaskActivity?(input: { taskID: string }): void
+  registerRemoteTask?(input: { replyID?: string; taskID: string }): void
+  remoteTaskID?(replyID: string): string | undefined
+  forgetRemoteTask?(replyID: string): void
+  sendAssistantText(input: { text: string; taskID?: string; messageID?: string; partID?: string }): void
+  sendAssistantFinal(input: {
+    text: string
+    replyID?: string
+    taskID?: string
+    messageID?: string
+    partID?: string
+  }): void
+  sendTurnError(input: { text: string; replyID?: string; taskID?: string; messageID?: string }): void
   sendControlResult(input: { requestID: string; ok: boolean; text: string; error?: string }): void
   onControlCommand(handler: (command: MultiAiCodeImControlCommand) => void): () => void
   close(): void
@@ -49,6 +60,8 @@ export type MultiAiCodeImControlCommand =
       text: string
       displayText: string
       attachments: MultiAiCodeImAttachment[]
+      replyID?: string
+      taskID?: string
     }
   | {
       command: "interrupt"
@@ -86,6 +99,7 @@ type ControlPayload = {
   displayText?: unknown
   attachments?: unknown
   replyId?: unknown
+  taskId?: unknown
   requestId?: unknown
 }
 
@@ -175,6 +189,8 @@ export function parseMultiAiCodeImControlPayload(
       displayText:
         typeof payload.displayText === "string" && payload.displayText.trim() ? payload.displayText : payload.text,
       attachments: parseAttachments(payload.attachments),
+      ...(typeof payload.replyId === "string" && payload.replyId.trim() ? { replyID: payload.replyId.trim() } : {}),
+      ...(typeof payload.taskId === "string" && payload.taskId.trim() ? { taskID: payload.taskId.trim() } : {}),
     }
   }
 
@@ -205,6 +221,7 @@ export function createMultiAiCodeImBridge(endpoint?: string): MultiAiCodeImBridg
 
   let closed = false
   const controlHandlers = new Set<(command: MultiAiCodeImControlCommand) => void>()
+  const remoteTaskIDs = new Map<string, string>()
 
   const emitControlCommand = (command: MultiAiCodeImControlCommand) => {
     for (const handler of controlHandlers) {
@@ -358,11 +375,12 @@ export function createMultiAiCodeImBridge(endpoint?: string): MultiAiCodeImBridg
   if (typeof watchdog.unref === "function") watchdog.unref()
 
   const sendReliableText = (input: {
-    kind: "assistant_text" | "assistant_final" | "turn_error"
+    kind: "task_started" | "task_activity" | "assistant_text" | "assistant_final" | "turn_error"
     text: string
     messageID?: string
     partID?: string
     replyID?: string
+    taskID?: string
   }) => {
     if (!input.text) return
     const messageID = input.messageID && input.messageID.trim() ? input.messageID : `opencode-im-${seq++}`
@@ -373,6 +391,7 @@ export function createMultiAiCodeImBridge(endpoint?: string): MultiAiCodeImBridg
       messageId: messageID,
       partId: input.partID,
       replyId: input.replyID,
+      taskId: input.taskID,
     }
     const line = JSON.stringify(payload) + "\n"
     if (pending.size >= MAX_PENDING) {
@@ -384,6 +403,26 @@ export function createMultiAiCodeImBridge(endpoint?: string): MultiAiCodeImBridg
   }
 
   return {
+    registerRemoteTask(input) {
+      if (!input.replyID) return
+      remoteTaskIDs.delete(input.replyID)
+      remoteTaskIDs.set(input.replyID, input.taskID)
+      if (remoteTaskIDs.size <= 256) return
+      const oldest = remoteTaskIDs.keys().next().value
+      if (oldest !== undefined) remoteTaskIDs.delete(oldest)
+    },
+    remoteTaskID(replyID) {
+      return remoteTaskIDs.get(replyID)
+    },
+    forgetRemoteTask(replyID) {
+      remoteTaskIDs.delete(replyID)
+    },
+    sendTaskStarted(input) {
+      sendReliableText({ kind: "task_started", text: "running", ...input })
+    },
+    sendTaskActivity(input) {
+      sendReliableText({ kind: "task_activity", text: "active", ...input })
+    },
     sendAssistantText(input) {
       sendReliableText({ kind: "assistant_text", ...input })
     },
@@ -429,6 +468,7 @@ export function createMultiAiCodeImBridge(endpoint?: string): MultiAiCodeImBridg
       dataSocket?.destroy()
       dataSocket = undefined
       pending.clear()
+      remoteTaskIDs.clear()
     },
   }
 }

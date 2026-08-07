@@ -49,6 +49,8 @@ describe("parseMultiAiCodeImControlPayload", () => {
         requestId: "req-1",
         text: "wrapped model prompt",
         displayText: "来自 IM 的消息",
+        replyId: "rim-fixed",
+        taskId: "task-fixed",
         attachments: [
           {
             type: "image",
@@ -66,6 +68,8 @@ describe("parseMultiAiCodeImControlPayload", () => {
       requestID: "req-1",
       text: "wrapped model prompt",
       displayText: "来自 IM 的消息",
+      replyID: "rim-fixed",
+      taskID: "task-fixed",
       attachments: [
         {
           type: "image",

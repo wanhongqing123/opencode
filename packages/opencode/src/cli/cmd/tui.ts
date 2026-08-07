@@ -61,6 +61,8 @@ export function createMultiAiCodeImTuiEventHandler(bridge?: MultiAiCodeImBridge)
   let partSequence = 0
   let errorSequence = 0
 
+  const taskIDForReply = (replyID: string) => bridge.remoteTaskID?.(replyID)
+
   const rememberCompletedReply = (replyID: string) => {
     if (completedReplyIDs.has(replyID)) return
     completedReplyIDs.add(replyID)
@@ -85,7 +87,10 @@ export function createMultiAiCodeImTuiEventHandler(bridge?: MultiAiCodeImBridge)
 
   const cleanupExchange = (sessionID: string, userMessageID: string) => {
     const replyID = remoteReplyByUserMessage.get(userMessageID)
-    if (replyID) idleEligibleReplyIDs.delete(replyID)
+    if (replyID) {
+      idleEligibleReplyIDs.delete(replyID)
+      bridge.forgetRemoteTask?.(replyID)
+    }
     remoteReplyByUserMessage.delete(userMessageID)
     textPartsByMessage.delete(userMessageID)
     messages.delete(userMessageID)
@@ -123,9 +128,11 @@ export function createMultiAiCodeImTuiEventHandler(bridge?: MultiAiCodeImBridge)
       const text = selected.flatMap((entry) => entry.parts.map((part) => part.text)).join("\n")
       const finalEntry = selected.at(-1)!
       const finalPart = finalEntry.parts.at(-1)!
+      const taskID = taskIDForReply(exchange.replyID)
       bridge.sendAssistantFinal({
         text,
         replyID: exchange.replyID,
+        ...(taskID ? { taskID } : {}),
         messageID: `${finalEntry.message.id}:final:${exchange.replyID}`,
         partID: finalPart.id,
       })
@@ -160,9 +167,11 @@ export function createMultiAiCodeImTuiEventHandler(bridge?: MultiAiCodeImBridge)
       )
       if (exchange) {
         if (termination.error) {
+          const taskID = taskIDForReply(exchange.replyID)
           bridge.sendTurnError({
             text: termination.error,
             replyID: exchange.replyID,
+            ...(taskID ? { taskID } : {}),
             messageID: `${sessionID}:error:${errorSequence++}:${exchange.replyID}`,
           })
         }
@@ -201,7 +210,11 @@ export function createMultiAiCodeImTuiEventHandler(bridge?: MultiAiCodeImBridge)
       const sessionID = payload.properties.sessionID
       const status = payload.properties.status.type
       if (status === "busy" || status === "retry") {
-        for (const exchange of activeExchanges(sessionID)) idleEligibleReplyIDs.delete(exchange.replyID)
+        for (const exchange of activeExchanges(sessionID)) {
+          idleEligibleReplyIDs.delete(exchange.replyID)
+          const taskID = taskIDForReply(exchange.replyID)
+          if (taskID) bridge.sendTaskActivity?.({ taskID })
+        }
         pendingSessionTerminations.delete(sessionID)
         return
       }
@@ -245,6 +258,7 @@ export function createMultiAiCodeImTuiEventHandler(bridge?: MultiAiCodeImBridge)
       textPartsByMessage.set(part.messageID, parts)
     }
     const current = parts.get(part.id)
+    const completedNow = current?.completed !== true && part.time?.end !== undefined
     parts.set(part.id, {
       id: part.id,
       messageID: part.messageID,
@@ -256,6 +270,18 @@ export function createMultiAiCodeImTuiEventHandler(bridge?: MultiAiCodeImBridge)
     if (message?.role === "user") {
       const replyID = remoteImReplyID(part.text)
       if (replyID && !completedReplyIDs.has(replyID)) remoteReplyByUserMessage.set(part.messageID, replyID)
+    }
+    if (completedNow && message?.role === "assistant" && message.parentID && part.text.trim()) {
+      const replyID = remoteReplyByUserMessage.get(message.parentID)
+      const taskID = replyID ? taskIDForReply(replyID) : undefined
+      if (taskID) {
+        bridge.sendAssistantText({
+          text: part.text,
+          taskID,
+          messageID: part.messageID,
+          partID: part.id,
+        })
+      }
     }
     forwardFinalAssistantText(payload.properties.sessionID)
   }

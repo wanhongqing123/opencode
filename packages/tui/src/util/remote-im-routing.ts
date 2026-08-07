@@ -66,7 +66,7 @@ function parseModelRef(value: string): RemoteImModelRef | undefined {
   }
 }
 
-export function selectRemoteImImageModel(input: {
+export function selectImageCapableModel(input: {
   providers: RemoteImProvider[]
   current?: RemoteImModelRef
   routing?: ManagedRouting
@@ -95,3 +95,5 @@ export function selectRemoteImImageModel(input: {
   }
   return undefined
 }
+
+export const selectRemoteImImageModel = selectImageCapableModel
