@@ -49,6 +49,7 @@ describe("parseMultiAiCodeImControlPayload", () => {
         requestId: "req-1",
         text: "wrapped model prompt",
         displayText: "来自 IM 的消息",
+        inputOrigin: "remote-im",
         replyId: "rim-fixed",
         taskId: "task-fixed",
         attachments: [
@@ -68,6 +69,7 @@ describe("parseMultiAiCodeImControlPayload", () => {
       requestID: "req-1",
       text: "wrapped model prompt",
       displayText: "来自 IM 的消息",
+      inputOrigin: "remote-im",
       replyID: "rim-fixed",
       taskID: "task-fixed",
       attachments: [
@@ -89,6 +91,7 @@ describe("parseMultiAiCodeImControlPayload", () => {
         command: "submit_user_message",
         requestId: "req-1",
         text: "wrapped model prompt",
+        inputOrigin: "local",
         attachments: [
           { type: "image", localPath: "relative.png", mimeType: "image/png" },
           { type: "image", localPath: "/tmp/note.txt", mimeType: "text/plain" },
@@ -103,6 +106,7 @@ describe("parseMultiAiCodeImControlPayload", () => {
       text: "wrapped model prompt",
       displayText: "wrapped model prompt",
       attachments: [],
+      inputOrigin: "local",
     })
   })
 })

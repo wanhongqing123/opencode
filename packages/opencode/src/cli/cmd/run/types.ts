@@ -35,6 +35,7 @@ export type RunPrompt = {
   partID?: string
   text: string
   displayText?: string
+  inputOrigin?: "remote-im" | "local"
   remoteImReplyID?: string
   remoteImTaskID?: string
   parts: RunPromptPart[]

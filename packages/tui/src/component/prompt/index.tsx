@@ -56,6 +56,7 @@ import { usePromptWorkspace } from "./workspace"
 import { usePromptMove } from "./move"
 import { extractLeadingLocalAttachmentPath, readLocalAttachment } from "./local-attachment"
 import { useLocation } from "../../context/location"
+import { useMultiAiCodeIm } from "../../context/multi-ai-code-im"
 
 registerOpencodeSpinner()
 
@@ -140,6 +141,7 @@ function formatEditorContext(selection: EditorSelection) {
 let stashed: { prompt: PromptInfo; cursor: number } | undefined
 
 export function Prompt(props: PromptProps) {
+  const multiAiCodeIm = useMultiAiCodeIm()
   let input: TextareaRenderable
   let anchor: BoxRenderable
   const [inputTarget, setInputTarget] = createSignal<TextareaRenderable | undefined>()
@@ -1071,6 +1073,8 @@ export function Prompt(props: PromptProps) {
             },
           ]
         : []
+
+    multiAiCodeIm?.setInputOrigin?.("tui", sessionID)
 
     if (store.mode === "shell") {
       move.startSubmit()
