@@ -27,6 +27,7 @@ export type QueueInput = {
   footer: FooterApi
   initialInput?: string
   trace?: Trace
+  onSubmit?: (prompt: RunPrompt) => void
   onSend?: (prompt: RunPrompt) => void
   onNewSession?: () => void | Promise<void>
   registerExternalSubmit?: (submit: (prompt: RunPrompt) => { ok: true } | { ok: false; error: string }) => () => void
@@ -274,6 +275,8 @@ export async function runPromptQueue(input: QueueInput): Promise<void> {
     if (!prompt.text.trim()) {
       return { ok: false, error: "prompt is empty" }
     }
+
+    input.onSubmit?.(prompt)
 
     if (prompt.mode !== "shell" && isExitCommand(prompt.text)) {
       input.footer.close()

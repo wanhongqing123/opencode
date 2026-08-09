@@ -85,6 +85,7 @@ import { win32DisableProcessedInput, win32FlushInputBuffer } from "./terminal-wi
 import { destroyRenderer } from "./util/renderer"
 import { cliErrorMessage, errorFormat } from "./util/error"
 import { remoteImPromptParts, type RemoteImImageAttachment } from "./util/remote-im-display"
+import { MultiAiCodeImProvider } from "./context/multi-ai-code-im"
 
 registerOpencodeSpinner()
 
@@ -147,7 +148,9 @@ export type TuiInput = {
   headers?: RequestInit["headers"]
   events?: EventSource
   multiAiCodeImControl?: {
-    sendTaskStarted?(input: { replyID?: string; taskID: string }): void
+    setInputOrigin?(origin: "remote-im" | "tui", sessionID?: string): void
+    isRemoteImForwardingActive?(): boolean
+    sendTaskStarted?(input?: { replyID?: string; taskID?: string }): void
     registerRemoteTask?(input: { replyID?: string; taskID: string }): void
     forgetRemoteTask?(replyID: string): void
     sendControlResult(input: { requestID: string; ok: boolean; text: string; error?: string }): void
@@ -165,6 +168,7 @@ export type TuiInput = {
               text: string
               displayText: string
               attachments: RemoteImImageAttachment[]
+              inputOrigin: "remote-im" | "local"
               replyID?: string
               taskID?: string
             }
@@ -342,12 +346,18 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
                                                               <PromptRefProvider>
                                                                 <EditorContextProvider>
                                                                   <LocationProvider>
-                                                                    <App
-                                                                      onSnapshot={input.onSnapshot}
-                                                                      directory={input.directory}
-                                                                      pluginHost={input.pluginHost}
-                                                                      multiAiCodeImControl={input.multiAiCodeImControl}
-                                                                    />
+                                                                    <MultiAiCodeImProvider
+                                                                      control={input.multiAiCodeImControl}
+                                                                    >
+                                                                      <App
+                                                                        onSnapshot={input.onSnapshot}
+                                                                        directory={input.directory}
+                                                                        pluginHost={input.pluginHost}
+                                                                        multiAiCodeImControl={
+                                                                          input.multiAiCodeImControl
+                                                                        }
+                                                                      />
+                                                                    </MultiAiCodeImProvider>
                                                                   </LocationProvider>
                                                                 </EditorContextProvider>
                                                               </PromptRefProvider>
@@ -593,11 +603,20 @@ function App(props: {
           return
         }
 
+        props.multiAiCodeImControl?.setInputOrigin?.(
+          command.inputOrigin === "remote-im" ? "remote-im" : "tui",
+          sessionID,
+        )
+
         if (command.taskID) {
           props.multiAiCodeImControl?.registerRemoteTask?.({
             taskID: command.taskID,
             ...(command.replyID ? { replyID: command.replyID } : {}),
           })
+        }
+        if (props.multiAiCodeImControl?.isRemoteImForwardingActive?.()) {
+          props.multiAiCodeImControl.sendTaskStarted?.()
+        } else if (command.taskID) {
           props.multiAiCodeImControl?.sendTaskStarted?.({
             taskID: command.taskID,
             ...(command.replyID ? { replyID: command.replyID } : {}),

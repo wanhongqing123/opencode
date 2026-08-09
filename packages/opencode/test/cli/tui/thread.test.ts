@@ -213,7 +213,7 @@ describe("tui thread", () => {
     const forgotten: string[] = []
     const handleEvent = createMultiAiCodeImTuiEventHandler({
       sendTaskActivity(input) {
-        activity.push(input.taskID)
+        if (input?.taskID) activity.push(input.taskID)
       },
       remoteTaskID(replyID) {
         return replyID === "rim-lifecycle" ? "task-lifecycle" : undefined
@@ -294,10 +294,122 @@ describe("tui thread", () => {
 
     expect(activity).toEqual(["task-lifecycle"])
     expect(progress).toEqual([{ text: "source-authored result", taskID: "task-lifecycle" }])
-    expect(final).toEqual([
-      { text: "source-authored result", replyID: "rim-lifecycle", taskID: "task-lifecycle" },
-    ])
+    expect(final).toEqual([{ text: "source-authored result", replyID: "rim-lifecycle", taskID: "task-lifecycle" }])
     expect(forgotten).toEqual(["rim-lifecycle"])
+  })
+
+  test("keeps forwarding across remote IM turns until a TUI prompt changes the input origin", () => {
+    let active = true
+    let activeSessionID: string | undefined = "ses_source_routed"
+    const setInputOrigin = (origin: "remote-im" | "tui", sessionID?: string) => {
+      active = origin === "remote-im"
+      activeSessionID = active ? sessionID : undefined
+    }
+    const assistantMessages: Array<{
+      text: string
+      replyID?: string
+      taskID?: string
+      messageID?: string
+      partID?: string
+    }> = []
+    const final: Array<{
+      text: string
+      replyID?: string
+      taskID?: string
+      messageID?: string
+      partID?: string
+    }> = []
+    const handleEvent = createMultiAiCodeImTuiEventHandler({
+      setInputOrigin,
+      isRemoteImForwardingActive() {
+        return active
+      },
+      remoteImForwardingSessionID() {
+        return activeSessionID
+      },
+      sendTaskActivity() {},
+      sendAssistantText(input) {
+        assistantMessages.push(input)
+      },
+      sendAssistantFinal(input) {
+        final.push(input)
+      },
+      sendTurnError() {},
+      onControlCommand() {
+        return () => {}
+      },
+      sendControlResult() {},
+      close() {},
+    })
+
+    const completeTurn = (messageID: string, partID: string, text: string, sessionID = "ses_source_routed") => {
+      handleEvent({
+        payload: {
+          type: "message.updated",
+          properties: {
+            sessionID,
+            info: { id: messageID, role: "assistant", time: { completed: Date.now() } },
+          },
+        },
+      } as never)
+      handleEvent({
+        payload: {
+          type: "message.part.updated",
+          properties: {
+            sessionID,
+            part: {
+              id: partID,
+              messageID,
+              type: "text",
+              text,
+              time: { end: Date.now() },
+            },
+          },
+        },
+      } as never)
+      handleEvent({
+        payload: {
+          type: "session.status",
+          properties: { sessionID, status: { type: "idle" } },
+        },
+      } as never)
+    }
+
+    completeTurn("msg_remote_1", "part_remote_1", "first remote reply")
+    completeTurn("msg_background", "part_background", "background reply", "ses_background")
+    completeTurn("msg_remote_2", "part_remote_2", "second remote reply")
+
+    expect(assistantMessages).toEqual([
+      {
+        text: "first remote reply",
+        messageID: "msg_remote_1:part_remote_1",
+        partID: "part_remote_1",
+      },
+      {
+        text: "second remote reply",
+        messageID: "msg_remote_2:part_remote_2",
+        partID: "part_remote_2",
+      },
+    ])
+    expect(final).toEqual([
+      {
+        text: "first remote reply",
+        messageID: "msg_remote_1:final",
+        partID: "part_remote_1",
+      },
+      {
+        text: "second remote reply",
+        messageID: "msg_remote_2:final",
+        partID: "part_remote_2",
+      },
+    ])
+    expect(final.every((item) => item.replyID === undefined && item.taskID === undefined)).toBe(true)
+
+    setInputOrigin("tui")
+    completeTurn("msg_tui", "part_tui", "local TUI reply")
+
+    expect(assistantMessages.map((item) => item.text)).toEqual(["first remote reply", "second remote reply"])
+    expect(final).toHaveLength(2)
   })
 
   test("does not forward a local turn while a remote IM reply is not active", () => {

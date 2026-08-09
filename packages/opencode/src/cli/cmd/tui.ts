@@ -28,7 +28,214 @@ function remoteImReplyID(text: string) {
 
 export function createMultiAiCodeImTuiEventHandler(bridge?: MultiAiCodeImBridge) {
   if (!bridge) return (_event: GlobalEvent) => {}
+  if (bridge.setInputOrigin && bridge.isRemoteImForwardingActive) {
+    return createSourceRoutedMultiAiCodeImTuiEventHandler(bridge)
+  }
+  return createLegacyMultiAiCodeImTuiEventHandler(bridge)
+}
 
+function createSourceRoutedMultiAiCodeImTuiEventHandler(bridge: MultiAiCodeImBridge) {
+  type MessageState = {
+    id: string
+    sessionID: string
+    role: "assistant" | "user"
+    completed: boolean
+    sequence: number
+  }
+  type TextPartState = {
+    id: string
+    messageID: string
+    text: string
+    completed: boolean
+    sequence: number
+  }
+
+  const messages = new Map<string, MessageState>()
+  const textPartsByMessage = new Map<string, Map<string, TextPartState>>()
+  const candidatesBySession = new Map<string, Set<string>>()
+  const forwardedAssistantParts = new Set<string>()
+  const forwardedAssistantPartOrder: string[] = []
+  const forwardedTerminals = new Set<string>()
+  const forwardedTerminalOrder: string[] = []
+  const pendingErrors = new Map<string, { text: string; messageID: string }>()
+  let messageSequence = 0
+  let partSequence = 0
+  let errorSequence = 0
+
+  const forwardingActive = () => bridge.isRemoteImForwardingActive?.() === true
+  const forwardingSessionActive = (sessionID: string) => {
+    if (!forwardingActive()) return false
+    const activeSessionID = bridge.remoteImForwardingSessionID?.()
+    return !activeSessionID || activeSessionID === sessionID
+  }
+
+  const rememberBounded = (set: Set<string>, order: string[], value: string) => {
+    if (set.has(value)) return false
+    set.add(value)
+    order.push(value)
+    if (order.length > 512) {
+      const oldest = order.shift()
+      if (oldest) set.delete(oldest)
+    }
+    return true
+  }
+
+  const completedParts = (messageID: string) =>
+    [...(textPartsByMessage.get(messageID)?.values() ?? [])]
+      .filter((part) => part.completed && part.text.trim())
+      .sort((left, right) => left.sequence - right.sequence)
+
+  const resetPendingSession = (sessionID: string) => {
+    candidatesBySession.delete(sessionID)
+    pendingErrors.delete(sessionID)
+  }
+
+  const rememberCandidate = (message: MessageState) => {
+    if (!forwardingSessionActive(message.sessionID) || message.role !== "assistant") return
+    let candidates = candidatesBySession.get(message.sessionID)
+    if (!candidates) {
+      candidates = new Set()
+      candidatesBySession.set(message.sessionID, candidates)
+    }
+    candidates.add(message.id)
+  }
+
+  const forwardCompletedParts = (message: MessageState) => {
+    if (!forwardingSessionActive(message.sessionID) || message.role !== "assistant") return
+    for (const part of completedParts(message.id)) {
+      const identity = `${message.id}:${part.id}`
+      if (!rememberBounded(forwardedAssistantParts, forwardedAssistantPartOrder, identity)) continue
+      rememberCandidate(message)
+      bridge.sendAssistantText({
+        text: part.text,
+        messageID: identity,
+        partID: part.id,
+      })
+    }
+  }
+
+  const finishSession = (sessionID: string) => {
+    if (!forwardingSessionActive(sessionID)) {
+      resetPendingSession(sessionID)
+      return
+    }
+
+    const pendingError = pendingErrors.get(sessionID)
+    if (pendingError) {
+      pendingErrors.delete(sessionID)
+      if (rememberBounded(forwardedTerminals, forwardedTerminalOrder, pendingError.messageID)) {
+        bridge.sendTurnError(pendingError)
+      }
+      candidatesBySession.delete(sessionID)
+      return
+    }
+
+    const candidates = [...(candidatesBySession.get(sessionID) ?? [])]
+      .map((messageID) => messages.get(messageID))
+      .filter((message): message is MessageState => message !== undefined)
+      .sort((left, right) => left.sequence - right.sequence)
+    const finalMessage = candidates.findLast((message) => completedParts(message.id).length > 0)
+    if (!finalMessage) return
+
+    const parts = completedParts(finalMessage.id)
+    const terminalID = `${finalMessage.id}:final`
+    if (rememberBounded(forwardedTerminals, forwardedTerminalOrder, terminalID)) {
+      bridge.sendAssistantFinal({
+        text: parts.map((part) => part.text).join("\n"),
+        messageID: terminalID,
+        partID: parts.at(-1)?.id,
+      })
+    }
+    candidatesBySession.delete(sessionID)
+  }
+
+  return (event: GlobalEvent) => {
+    const payload = event.payload
+
+    if (payload.type === "session.error") {
+      const sessionID = payload.properties.sessionID
+      if (!sessionID || !forwardingSessionActive(sessionID)) return
+      const error = payload.properties.error
+      if (!error || error.name === "MessageAbortedError") return
+      const data = error.data
+      const text =
+        data && typeof data === "object" && "message" in data && typeof data.message === "string"
+          ? data.message
+          : error.name
+      pendingErrors.set(sessionID, {
+        text,
+        messageID: `${sessionID}:error:${errorSequence++}`,
+      })
+      return
+    }
+
+    if (payload.type === "session.status") {
+      const sessionID = payload.properties.sessionID
+      const status = payload.properties.status.type
+      if (!forwardingSessionActive(sessionID)) {
+        resetPendingSession(sessionID)
+        return
+      }
+      if (status === "busy" || status === "retry") {
+        bridge.sendTaskActivity?.()
+        if (status === "retry") pendingErrors.delete(sessionID)
+        return
+      }
+      if (status === "idle") finishSession(sessionID)
+      return
+    }
+
+    if (payload.type === "session.idle") {
+      finishSession(payload.properties.sessionID)
+      return
+    }
+
+    if (payload.type === "message.updated") {
+      const info = payload.properties.info
+      const current = messages.get(info.id)
+      const message: MessageState = {
+        id: info.id,
+        sessionID: payload.properties.sessionID,
+        role: info.role,
+        completed: current?.completed === true || (info.role === "assistant" && info.time?.completed !== undefined),
+        sequence: current?.sequence ?? messageSequence++,
+      }
+      messages.set(info.id, message)
+      if (!forwardingSessionActive(message.sessionID)) {
+        resetPendingSession(message.sessionID)
+        return
+      }
+      forwardCompletedParts(message)
+      return
+    }
+
+    if (payload.type !== "message.part.updated") return
+    const part = payload.properties.part
+    if (part.type !== "text") return
+    let parts = textPartsByMessage.get(part.messageID)
+    if (!parts) {
+      parts = new Map()
+      textPartsByMessage.set(part.messageID, parts)
+    }
+    const current = parts.get(part.id)
+    parts.set(part.id, {
+      id: part.id,
+      messageID: part.messageID,
+      text: part.text,
+      completed: current?.completed === true || part.time?.end !== undefined,
+      sequence: current?.sequence ?? partSequence++,
+    })
+    const message = messages.get(part.messageID)
+    if (!message) return
+    if (!forwardingSessionActive(message.sessionID)) {
+      resetPendingSession(message.sessionID)
+      return
+    }
+    forwardCompletedParts(message)
+  }
+}
+
+function createLegacyMultiAiCodeImTuiEventHandler(bridge: MultiAiCodeImBridge) {
   type MessageState = {
     id: string
     sessionID: string
