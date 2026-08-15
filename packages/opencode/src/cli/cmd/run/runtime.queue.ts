@@ -27,12 +27,21 @@ export type QueueInput = {
   footer: FooterApi
   initialInput?: string
   trace?: Trace
-  onSubmit?: (prompt: RunPrompt) => void
+  onSubmit?: (prompt: RunPrompt, active?: RunPrompt) => void
+  onStart?: (prompt: RunPrompt) => void
+  onFinish?: (prompt: RunPrompt, result: QueueTurnResult) => void
   onSend?: (prompt: RunPrompt) => void
-  onNewSession?: () => void | Promise<void>
+  onNewSession?: (prompt: RunPrompt) => QueueNewSessionResult | Promise<QueueNewSessionResult>
   registerExternalSubmit?: (submit: (prompt: RunPrompt) => { ok: true } | { ok: false; error: string }) => () => void
   run: (prompt: RunPrompt, signal: AbortSignal) => Promise<void>
 }
+
+export type QueueTurnResult =
+  | { status: "completed"; command?: "new-session" }
+  | { status: "cancelled"; error: string }
+  | { status: "error"; error: unknown }
+
+export type QueueNewSessionResult = void | { ok: true } | { ok: false; error: string }
 
 type State = {
   queue: RunPrompt[]
@@ -105,8 +114,12 @@ export async function runPromptQueue(input: QueueInput): Promise<void> {
     }
 
     state.closed = true
+    const cancelled = [...state.queue]
     state.queue.length = 0
     state.queued.length = 0
+    for (const prompt of cancelled) {
+      input.onFinish?.(prompt, { status: "cancelled", error: "prompt queue closed before the turn started" })
+    }
     state.ctrl?.abort()
     stop.resolve({ type: "closed" })
     finish()
@@ -130,6 +143,7 @@ export async function runPromptQueue(input: QueueInput): Promise<void> {
 
           if (prompt.mode !== "shell" && isNewCommand(prompt.text)) {
             syncQueue()
+            input.onStart?.(prompt)
             if (!input.onNewSession) {
               emit(
                 {
@@ -142,6 +156,7 @@ export async function runPromptQueue(input: QueueInput): Promise<void> {
                   status: "new sessions unavailable",
                 },
               )
+              input.onFinish?.(prompt, { status: "error", error: new Error("new sessions unavailable") })
               continue
             }
 
@@ -160,7 +175,24 @@ export async function runPromptQueue(input: QueueInput): Promise<void> {
                 queue: state.queue.length,
               },
             )
-            await input.onNewSession()
+            const task = Promise.resolve(input.onNewSession(prompt)).then(
+              (result) => ({ type: "done" as const, result }),
+              (error) => ({ type: "error" as const, error }),
+            )
+            const next = await Promise.race([task, stop.promise])
+            if (next.type === "closed") {
+              input.onFinish?.(prompt, { status: "cancelled", error: "OpenCode session change was interrupted." })
+              break
+            }
+            if (next.type === "error") {
+              input.onFinish?.(prompt, { status: "error", error: next.error })
+              throw next.error
+            }
+            if (next.result && !next.result.ok) {
+              input.onFinish?.(prompt, { status: "error", error: new Error(next.result.error) })
+            } else {
+              input.onFinish?.(prompt, { status: "completed", command: "new-session" })
+            }
             continue
           }
 
@@ -172,6 +204,7 @@ export async function runPromptQueue(input: QueueInput): Promise<void> {
                   messageID: prompt.messageID ?? queued?.messageID ?? MessageID.ascending(),
                 }
           state.active = sent
+          input.onStart?.(sent)
 
           emit(
             {
@@ -188,9 +221,22 @@ export async function runPromptQueue(input: QueueInput): Promise<void> {
           const ctrl = new AbortController()
           state.ctrl = ctrl
 
+          let result: QueueTurnResult = { status: "completed" }
           try {
-            await input.footer.idle()
+            const ready = await Promise.race([
+              input.footer.idle().then(
+                () => ({ type: "ready" as const }),
+                (error) => ({ type: "error" as const, error }),
+              ),
+              stop.promise,
+            ])
+            if (ready.type === "closed") {
+              result = { status: "cancelled", error: "OpenCode turn was interrupted." }
+              break
+            }
+            if (ready.type === "error") throw ready.error
             if (state.closed) {
+              result = { status: "cancelled", error: "prompt queue closed before the turn started" }
               break
             }
 
@@ -219,13 +265,19 @@ export async function runPromptQueue(input: QueueInput): Promise<void> {
             const next = await Promise.race([task, stop.promise])
             if (next.type === "closed") {
               ctrl.abort()
+              result = { status: "cancelled", error: "OpenCode turn was interrupted." }
               break
             }
 
             if (next.type === "error") {
+              result = { status: "error", error: next.error }
               throw next.error
             }
+          } catch (error) {
+            if (result.status === "completed") result = { status: "error", error }
+            throw error
           } finally {
+            input.onFinish?.(sent, result)
             if (state.ctrl === ctrl) {
               state.ctrl = undefined
             }
@@ -276,9 +328,12 @@ export async function runPromptQueue(input: QueueInput): Promise<void> {
       return { ok: false, error: "prompt is empty" }
     }
 
-    input.onSubmit?.(prompt)
+    if (prompt.inputOrigin !== "remote-im") input.onSubmit?.(prompt, state.active)
 
     if (prompt.mode !== "shell" && isExitCommand(prompt.text)) {
+      if (prompt.inputOrigin === "remote-im") {
+        return { ok: false, error: "remote /exit is not supported" }
+      }
       input.footer.close()
       return { ok: true }
     }
@@ -335,6 +390,7 @@ export async function runPromptQueue(input: QueueInput): Promise<void> {
     if (!queued) return false
     state.queue = state.queue.filter((prompt) => prompt !== queued.prompt)
     removeLocalQueued(queued)
+    input.onFinish?.(queued.prompt, { status: "cancelled", error: "queued prompt was removed" })
     return true
   })
 

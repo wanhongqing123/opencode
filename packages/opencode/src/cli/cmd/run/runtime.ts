@@ -18,11 +18,12 @@ import { MessageID } from "@/session/schema"
 import { createRunDemo } from "./demo"
 import { resolveModelInfo, resolveRunTuiConfig, resolveSessionInfo } from "./runtime.boot"
 import { createRuntimeLifecycle } from "./runtime.lifecycle"
-import { createMultiAiCodeImBridge } from "./multi-ai-code-im-bridge"
+import { createMultiAiCodeImBridge, type MultiAiCodeImBridge } from "./multi-ai-code-im-bridge"
 import { remoteImPromptParts } from "@opencode-ai/tui/util/remote-im-display"
 import { trace } from "./trace"
 import { cycleVariant, formatModelLabel, resolveSavedVariant, resolveVariant, saveVariant } from "./variant.shared"
 import type { LocalReplayAnchor, LocalReplayRow, RunInput, RunPrompt, RunProvider, StreamCommit } from "./types"
+import type { QueueTurnResult } from "./runtime.queue"
 
 /** @internal Exported for testing */
 export { pickVariant, resolveVariant } from "./variant.shared"
@@ -99,6 +100,67 @@ type ResolvedSession = {
   sessionID: string
   sessionTitle?: string
   agent?: string | undefined
+}
+
+/** @internal Exported for focused Remote IM lifecycle tests. */
+export type RemoteImRunTurnState = {
+  replyID?: string
+  taskID?: string
+  outputs: Array<{ text: string; messageID: string; partID: string }>
+  error?: string
+  terminal: boolean
+  suppressed: boolean
+}
+
+type RemoteImTerminalBridge = Pick<MultiAiCodeImBridge, "sendAssistantFinal" | "sendTurnError"> &
+  Partial<Pick<MultiAiCodeImBridge, "forgetRemoteTask">>
+
+/** @internal Exported for focused Remote IM lifecycle tests. */
+export function finishRemoteImRunTurn(
+  bridge: RemoteImTerminalBridge | undefined,
+  prompt: RunPrompt,
+  turn: RemoteImRunTurnState,
+  result: QueueTurnResult,
+) {
+  if (turn.terminal) return
+  turn.terminal = true
+
+  const route = {
+    ...(turn.replyID ? { replyID: turn.replyID } : {}),
+    ...(turn.taskID ? { taskID: turn.taskID } : {}),
+  }
+  if (result.status === "cancelled") {
+    bridge?.sendTurnError({ text: result.error, ...route })
+  } else if (result.status === "error") {
+    bridge?.sendTurnError({
+      text: result.error instanceof Error ? result.error.message : String(result.error),
+      ...route,
+    })
+  } else if (turn.error) {
+    bridge?.sendTurnError({ text: turn.error, ...route })
+  } else if (result.command === "new-session") {
+    bridge?.sendAssistantFinal({ text: "Started a new OpenCode session.", ...route })
+  } else {
+    const text = turn.outputs
+      .map((output) => output.text)
+      .filter(Boolean)
+      .join("\n")
+    const last = turn.outputs.at(-1)
+    if (text.trim()) {
+      bridge?.sendAssistantFinal({
+        text,
+        ...route,
+        ...(last ? { messageID: last.messageID, partID: last.partID } : {}),
+      })
+    } else {
+      bridge?.sendTurnError({
+        text: "OpenCode turn completed without a final assistant response.",
+        ...route,
+        ...(prompt.messageID ? { messageID: prompt.messageID } : {}),
+      })
+    }
+  }
+  if (turn.replyID) bridge?.forgetRemoteTask?.(turn.replyID)
 }
 
 function createSessionResolver(fn?: CreateSession) {
@@ -541,6 +603,28 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
 
   const runQueue = async () => {
     let includeFiles = true
+    const remoteTurns = new WeakMap<RunPrompt, RemoteImRunTurnState>()
+
+    const remoteTurn = (prompt: RunPrompt, create = false) => {
+      if (prompt.inputOrigin !== "remote-im") return undefined
+      const current = remoteTurns.get(prompt)
+      if (current || !create) return current
+      const turn: RemoteImRunTurnState = {
+        replyID: prompt.remoteImReplyID,
+        taskID: prompt.remoteImTaskID,
+        outputs: [],
+        terminal: false,
+        suppressed: false,
+      }
+      remoteTurns.set(prompt, turn)
+      return turn
+    }
+
+    const finishRemoteTurn = (prompt: RunPrompt, result: QueueTurnResult) => {
+      const turn = remoteTurn(prompt, true)
+      if (turn) finishRemoteImRunTurn(imBridge, prompt, turn, result)
+    }
+
     if (state.demo) {
       await state.demo.start()
     }
@@ -586,12 +670,30 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
 
           enqueue()
         }) ?? (() => {}),
-      onSubmit: (prompt) => {
+      onSubmit: (_prompt, active) => {
+        imBridge?.setInputOrigin?.("tui", state.sessionID || undefined)
+        const activeTurn = active ? remoteTurn(active) : undefined
+        if (activeTurn) activeTurn.suppressed = true
+      },
+      onStart: (prompt) => {
         imBridge?.setInputOrigin?.(
           prompt.inputOrigin === "remote-im" ? "remote-im" : "tui",
           state.sessionID || undefined,
         )
+        const turn = remoteTurn(prompt, true)
+        if (!turn) return
+        if (turn.taskID) {
+          imBridge?.registerRemoteTask?.({
+            taskID: turn.taskID,
+            ...(turn.replyID ? { replyID: turn.replyID } : {}),
+          })
+        }
+        imBridge?.sendTaskStarted?.({
+          ...(turn.replyID ? { replyID: turn.replyID } : {}),
+          ...(turn.taskID ? { taskID: turn.taskID } : {}),
+        })
       },
+      onFinish: finishRemoteTurn,
       onSend: (prompt) => {
         state.shown = true
         const displayPrompt = prompt.displayText
@@ -599,7 +701,6 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
           : prompt
         state.history.push(displayPrompt)
         if (prompt.mode !== "shell") {
-          if (imBridge?.isRemoteImForwardingActive?.()) imBridge.sendTaskStarted?.()
           rememberLocal({
             kind: "user",
             text: prompt.displayText ?? prompt.text,
@@ -667,6 +768,7 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
                 source: "system",
               })
               await state.demo?.start()
+              return { ok: true } as const
             } catch (error) {
               footer.event({
                 type: "stream.patch",
@@ -684,18 +786,33 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
               } as const
               rememberLocal(commit)
               footer.append(commit)
+              return { ok: false, error: commit.text } as const
             }
           }
         : undefined,
       run: async (prompt, signal) => {
-        if (state.demo && (await state.demo.prompt(prompt, signal))) {
-          return
+        if (state.demo) {
+          const result = await state.demo.prompt(prompt, signal)
+          if (result.handled) {
+            const turn = remoteTurn(prompt, true)
+            if (turn) {
+              turn.outputs.push(...result.outputs)
+              if (result.error) turn.error = result.error
+              if (signal.aborted) turn.error = "OpenCode turn was interrupted."
+              for (const output of result.outputs) {
+                if (!turn.terminal && !turn.suppressed) {
+                  imBridge?.sendAssistantText({ ...output, taskID: turn.taskID })
+                }
+              }
+            }
+            return
+          }
         }
 
         await state.switching?.catch(() => {})
 
         let outputAnchor: LocalReplayAnchor | undefined
-        const remoteAssistantOutputs: Array<{ text: string; messageID: string; partID: string }> = []
+        const turn = remoteTurn(prompt, true)
         try {
           const next = await ensureStream()
           const turnModel = prompt.model ?? state.model
@@ -710,34 +827,20 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
               outputAnchor = anchor
             },
             onTaskActivity: () => {
-              if (imBridge?.isRemoteImForwardingActive?.()) imBridge.sendTaskActivity?.()
+              if (turn && !turn.terminal && !turn.suppressed) {
+                imBridge?.sendTaskActivity?.({ taskID: turn.taskID })
+              }
             },
             onAssistantProgress: (output) => {
-              if (imBridge?.isRemoteImForwardingActive?.()) imBridge.sendAssistantText(output)
+              if (turn && !turn.terminal && !turn.suppressed) {
+                imBridge?.sendAssistantText({ ...output, taskID: turn.taskID })
+              }
             },
             onAssistantOutput: (output) => {
-              remoteAssistantOutputs.push(output)
+              turn?.outputs.push(output)
             },
             signal,
           })
-          if (imBridge?.isRemoteImForwardingActive?.()) {
-            const text = remoteAssistantOutputs
-              .map((output) => output.text)
-              .filter(Boolean)
-              .join("\n")
-            const last = remoteAssistantOutputs.at(-1)
-            if (text.trim()) {
-              imBridge?.sendAssistantFinal({
-                text,
-                ...(last ? { messageID: last.messageID, partID: last.partID } : {}),
-              })
-            } else {
-              imBridge?.sendTurnError({
-                text: "OpenCode turn completed without a final assistant response.",
-                ...(prompt.messageID ? { messageID: prompt.messageID } : {}),
-              })
-            }
-          }
           if (prompt.messageID) {
             state.localRows = state.localRows.filter(
               (row) => row.commit.kind !== "user" || row.commit.messageID !== prompt.messageID,
@@ -746,12 +849,7 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
           includeFiles = false
         } catch (error) {
           if (signal.aborted || footer.isClosed) {
-            if (imBridge?.isRemoteImForwardingActive?.()) {
-              imBridge?.sendTurnError({
-                text: "OpenCode turn was interrupted.",
-                ...(prompt.messageID ? { messageID: prompt.messageID } : {}),
-              })
-            }
+            if (turn) turn.error = "OpenCode turn was interrupted."
             return
           }
 
@@ -767,12 +865,7 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
           } as const
           rememberLocal(commit, outputAnchor)
           footer.append(commit)
-          if (imBridge?.isRemoteImForwardingActive?.()) {
-            imBridge?.sendTurnError({
-              text,
-              ...(prompt.messageID ? { messageID: prompt.messageID } : {}),
-            })
-          }
+          if (turn) turn.error = text
         }
       },
     })

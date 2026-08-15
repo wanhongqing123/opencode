@@ -32,6 +32,22 @@ describe("remote IM display text", () => {
     ])
   })
 
+  test("binds an immutable Remote IM route to the synthetic model part", () => {
+    expect(
+      remoteImPromptParts("wrapped model prompt", "来自 IM 的消息", [], {
+        route: { replyID: "rim-route", taskID: "task-route" },
+      })[0],
+    ).toEqual(
+      expect.objectContaining({
+        metadata: {
+          kind: "remote_im_model_prompt",
+          remoteImReplyID: "rim-route",
+          remoteImTaskID: "task-route",
+        },
+      }),
+    )
+  })
+
   test("submits remote images as native file parts", () => {
     expect(
       remoteImPromptParts("wrapped model prompt", "来自 IM 的图片", [

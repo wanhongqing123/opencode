@@ -1074,19 +1074,27 @@ export function Prompt(props: PromptProps) {
           ]
         : []
 
+    const remoteTakeover = multiAiCodeIm?.takeoverForLocalSubmit?.(sessionID)
+    if (remoteTakeover?.wait) await remoteTakeover.wait
     multiAiCodeIm?.setInputOrigin?.("tui", sessionID)
+    const releaseLocalSubmit = () => remoteTakeover?.release()
 
     if (store.mode === "shell") {
       move.startSubmit()
-      void sdk.client.session.shell({
-        sessionID,
-        agent: agent.name,
-        model: {
-          providerID: selectedModel.providerID,
-          modelID: selectedModel.modelID,
-        },
-        command: inputText,
-      })
+      void sdk.client.session
+        .shell({
+          sessionID,
+          agent: agent.name,
+          model: {
+            providerID: selectedModel.providerID,
+            modelID: selectedModel.modelID,
+          },
+          command: inputText,
+        })
+        .then((result) => {
+          if (result.error) releaseLocalSubmit()
+        })
+        .catch(releaseLocalSubmit)
       setStore("mode", "normal")
     } else if (
       inputText.startsWith("/") &&
@@ -1100,15 +1108,20 @@ export function Prompt(props: PromptProps) {
       const restOfInput = firstLineEnd === -1 ? "" : inputText.slice(firstLineEnd + 1)
       const args = firstLineArgs.join(" ") + (restOfInput ? "\n" + restOfInput : "")
 
-      void sdk.client.session.command({
-        sessionID,
-        command: command.slice(1),
-        arguments: args,
-        agent: agent.name,
-        model: `${selectedModel.providerID}/${selectedModel.modelID}`,
-        variant,
-        parts: nonTextParts.filter((x) => x.type === "file"),
-      })
+      void sdk.client.session
+        .command({
+          sessionID,
+          command: command.slice(1),
+          arguments: args,
+          agent: agent.name,
+          model: `${selectedModel.providerID}/${selectedModel.modelID}`,
+          variant,
+          parts: nonTextParts.filter((x) => x.type === "file"),
+        })
+        .then((result) => {
+          if (result.error) releaseLocalSubmit()
+        })
+        .catch(releaseLocalSubmit)
     } else {
       move.startSubmit()
       sdk.client.session
@@ -1131,6 +1144,7 @@ export function Prompt(props: PromptProps) {
           { throwOnError: true },
         )
         .catch((error) => {
+          releaseLocalSubmit()
           toast.show({
             title: "Failed to send prompt",
             message: errorMessage(error),

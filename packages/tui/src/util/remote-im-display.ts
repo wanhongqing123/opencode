@@ -56,7 +56,10 @@ export function remoteImPromptParts(
   text: string,
   displayText: string,
   attachments: RemoteImImageAttachment[] = [],
-  options: { includeModelText?: boolean } = {},
+  options: {
+    includeModelText?: boolean
+    route?: { replyID?: string; taskID?: string }
+  } = {},
 ) {
   return [
     ...(options.includeModelText === false
@@ -66,7 +69,11 @@ export function remoteImPromptParts(
             type: "text" as const,
             text,
             synthetic: true,
-            metadata: { kind: "remote_im_model_prompt" },
+            metadata: {
+              kind: "remote_im_model_prompt",
+              ...(options.route?.replyID ? { remoteImReplyID: options.route.replyID } : {}),
+              ...(options.route?.taskID ? { remoteImTaskID: options.route.taskID } : {}),
+            },
           },
         ]),
     ...attachments.map((attachment) => ({

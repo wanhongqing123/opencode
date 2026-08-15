@@ -152,6 +152,18 @@ type Input = {
   footer: FooterApi
 }
 
+export type DemoAssistantOutput = {
+  text: string
+  messageID: string
+  partID: string
+}
+
+export type DemoPromptResult = {
+  handled: boolean
+  outputs: DemoAssistantOutput[]
+  error?: string
+}
+
 function note(footer: FooterApi, text: string): void {
   footer.append({
     kind: "system",
@@ -311,7 +323,7 @@ function open(state: State): string {
   return id
 }
 
-async function emitText(state: State, body: string, signal?: AbortSignal): Promise<void> {
+async function emitText(state: State, body: string, signal?: AbortSignal): Promise<DemoAssistantOutput | undefined> {
   const msg = open(state)
   const part = take(state, "part", "part")
   const start = Date.now()
@@ -372,6 +384,7 @@ async function emitText(state: State, body: string, signal?: AbortSignal): Promi
       },
     },
   } as Event)
+  return { text: next, messageID: msg, partID: part }
 }
 
 async function emitReasoning(state: State, body: string, signal?: AbortSignal): Promise<void> {
@@ -1020,69 +1033,75 @@ function emitQuestion(state: State, kind: QuestionKind = "multi"): void {
   } as Event)
 }
 
-async function emitFmt(state: State, kind: string, body: string, signal?: AbortSignal): Promise<boolean> {
+async function emitFmt(
+  state: State,
+  kind: string,
+  body: string,
+  signal?: AbortSignal,
+): Promise<DemoPromptResult | undefined> {
   if (kind === "text") {
-    await emitText(state, body || SAMPLE_MARKDOWN, signal)
-    return true
+    const output = await emitText(state, body || SAMPLE_MARKDOWN, signal)
+    return { handled: true, outputs: output ? [output] : [] }
   }
 
   if (kind === "markdown" || kind === "md") {
-    await emitText(state, body || SAMPLE_MARKDOWN, signal)
-    return true
+    const output = await emitText(state, body || SAMPLE_MARKDOWN, signal)
+    return { handled: true, outputs: output ? [output] : [] }
   }
 
   if (kind === "table") {
-    await emitText(state, body || SAMPLE_TABLE, signal)
-    return true
+    const output = await emitText(state, body || SAMPLE_TABLE, signal)
+    return { handled: true, outputs: output ? [output] : [] }
   }
 
   if (kind === "reasoning") {
     await emitReasoning(state, body || "Planning next steps [REDACTED] while preserving reducer ordering.", signal)
-    return true
+    return { handled: true, outputs: [] }
   }
 
   if (kind === "bash") {
     await emitBash(state, signal)
-    return true
+    return { handled: true, outputs: [] }
   }
 
   if (kind === "write") {
     emitWrite(state)
-    return true
+    return { handled: true, outputs: [] }
   }
 
   if (kind === "edit") {
     emitEdit(state)
-    return true
+    return { handled: true, outputs: [] }
   }
 
   if (kind === "patch") {
     emitPatch(state)
-    return true
+    return { handled: true, outputs: [] }
   }
 
   if (kind === "task") {
     emitTask(state)
-    return true
+    return { handled: true, outputs: [] }
   }
 
   if (kind === "todo") {
     emitTodo(state)
-    return true
+    return { handled: true, outputs: [] }
   }
 
   if (kind === "question") {
     emitQuestionTool(state)
-    return true
+    return { handled: true, outputs: [] }
   }
 
   if (kind === "error") {
-    emitError(state, body || "demo error event")
-    return true
+    const text = body || "demo error event"
+    emitError(state, text)
+    return { handled: true, outputs: [], error: text }
   }
 
   if (kind === "mix") {
-    await emitText(state, SAMPLE_MARKDOWN, signal)
+    const output = await emitText(state, SAMPLE_MARKDOWN, signal)
     await wait(50, signal)
     await emitReasoning(state, "Thinking through formatter edge cases [REDACTED].", signal)
     await wait(50, signal)
@@ -1094,10 +1113,10 @@ async function emitFmt(state: State, kind: string, body: string, signal?: AbortS
     emitTodo(state)
     emitQuestionTool(state)
     emitError(state, "demo mixed scenario error")
-    return true
+    return { handled: true, outputs: output ? [output] : [], error: "demo mixed scenario error" }
   }
 
-  return false
+  return undefined
 }
 
 function intro(state: State): void {
@@ -1138,7 +1157,7 @@ export function createRunDemo(input: Input) {
     intro(state)
   }
 
-  const prompt = async (line: RunPrompt, signal?: AbortSignal): Promise<boolean> => {
+  const prompt = async (line: RunPrompt, signal?: AbortSignal): Promise<DemoPromptResult> => {
     const text = line.text.trim()
     const list = text.split(/\s+/)
     const cmd = list[0] || ""
@@ -1147,29 +1166,29 @@ export function createRunDemo(input: Input) {
 
     if (cmd === "/help") {
       intro(state)
-      return true
+      return { handled: true, outputs: [] }
     }
 
     if (cmd === "/permission") {
       const kind = permissionKind(list[1])
       if (!kind) {
         note(state.footer, `Pick a permission kind: ${PERMISSIONS.join(", ")}`)
-        return true
+        return { handled: true, outputs: [] }
       }
 
       emitPermission(state, kind)
-      return true
+      return { handled: true, outputs: [] }
     }
 
     if (cmd === "/question") {
       const kind = questionKind(list[1])
       if (!kind) {
         note(state.footer, `Pick a question kind: ${QUESTIONS.join(", ")}`)
-        return true
+        return { handled: true, outputs: [] }
       }
 
       emitQuestion(state, kind)
-      return true
+      return { handled: true, outputs: [] }
     }
 
     if (cmd === "/fmt") {
@@ -1177,19 +1196,17 @@ export function createRunDemo(input: Input) {
       const body = list.slice(2).join(" ")
       if (!kind) {
         note(state.footer, `Pick a kind: ${KINDS.join(", ")}`)
-        return true
+        return { handled: true, outputs: [] }
       }
 
-      const ok = await emitFmt(state, kind, body, signal)
-      if (ok) {
-        return true
-      }
+      const result = await emitFmt(state, kind, body, signal)
+      if (result) return result
 
       note(state.footer, `Unknown kind "${kind}". Use: ${KINDS.join(", ")}`)
-      return true
+      return { handled: true, outputs: [] }
     }
 
-    return false
+    return { handled: false, outputs: [] }
   }
 
   const permission = (input: PermissionReply): boolean => {
