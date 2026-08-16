@@ -115,6 +115,49 @@ describe("session.retry.delay", () => {
       })
     }),
   )
+
+  it.instance("stops retrying after RETRY_MAX_ATTEMPTS instead of looping forever", () =>
+    Effect.gen(function* () {
+      const sessionID = SessionID.make("session-retry-cap-test")
+      // Still classified as retryable — the cap, not retryable(), has to be what stops it.
+      const error = apiError({ "retry-after-ms": "0" })
+      const status = yield* SessionStatus.Service
+      const attempts: number[] = []
+
+      const step = yield* Schedule.toStepWithMetadata(
+        SessionRetry.policy({
+          provider: "test",
+          parse: Schema.decodeUnknownSync(SessionV1.APIError.Schema),
+          set: (info) => {
+            attempts.push(info.attempt)
+            return status.set(sessionID, {
+              type: "retry",
+              attempt: info.attempt,
+              message: info.message,
+              next: info.next,
+            })
+          },
+        }),
+      )
+
+      for (let i = 0; i < SessionRetry.RETRY_MAX_ATTEMPTS; i++) yield* step(error)
+
+      // One step past the cap: the schedule is exhausted, so the step fails
+      // (Cause.Done) rather than scheduling another wait.
+      const exhausted = yield* Effect.exit(step(error))
+      expect(exhausted._tag).toBe("Failure")
+
+      // Exactly RETRY_MAX_ATTEMPTS waits, numbered 1..N with no gaps or repeats,
+      // and nothing recorded for the step that gave up.
+      expect(attempts).toEqual(Array.from({ length: SessionRetry.RETRY_MAX_ATTEMPTS }, (_, i) => i + 1))
+    }),
+  )
+
+  test("caps retries at five", () => {
+    // Pinned deliberately: the point of the cap is that it is small. If someone
+    // raises it, that should be a conscious edit here, not a silent drift.
+    expect(SessionRetry.RETRY_MAX_ATTEMPTS).toBe(5)
+  })
 })
 
 describe("session.retry.retryable", () => {
