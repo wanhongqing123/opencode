@@ -10,6 +10,8 @@ export type MultiAiCodeImAttachment = {
 
 export type MultiAiCodeImInputOrigin = "remote-im" | "tui"
 
+export type MultiAiCodeImUserMessageOrigin = "remote-im" | "remote-im-machine" | "local"
+
 export type MultiAiCodeImBridge = {
   setInputOrigin?(origin: MultiAiCodeImInputOrigin, sessionID?: string): void
   isRemoteImForwardingActive?(): boolean
@@ -65,7 +67,7 @@ export type MultiAiCodeImControlCommand =
       text: string
       displayText: string
       attachments: MultiAiCodeImAttachment[]
-      inputOrigin: "remote-im" | "local"
+      inputOrigin: MultiAiCodeImUserMessageOrigin
       replyID?: string
       taskID?: string
     }
@@ -189,6 +191,14 @@ export function parseMultiAiCodeImControlPayload(
   if (payload.command === "submit_user_message") {
     if (typeof payload.requestId !== "string" || !payload.requestId.trim()) return undefined
     if (typeof payload.text !== "string" || !payload.text.trim()) return undefined
+    const inputOrigin =
+      payload.inputOrigin === "remote-im" ||
+      payload.inputOrigin === "remote-im-machine" ||
+      payload.inputOrigin === "local"
+        ? payload.inputOrigin
+        : typeof payload.replyId === "string" || typeof payload.taskId === "string"
+          ? "remote-im"
+          : "local"
     return {
       command: "submit_user_message",
       requestID: payload.requestId,
@@ -196,14 +206,15 @@ export function parseMultiAiCodeImControlPayload(
       displayText:
         typeof payload.displayText === "string" && payload.displayText.trim() ? payload.displayText : payload.text,
       attachments: parseAttachments(payload.attachments),
-      inputOrigin:
-        payload.inputOrigin === "remote-im" || payload.inputOrigin === "local"
-          ? payload.inputOrigin
-          : typeof payload.replyId === "string" || typeof payload.taskId === "string"
-            ? "remote-im"
-            : "local",
-      ...(typeof payload.replyId === "string" && payload.replyId.trim() ? { replyID: payload.replyId.trim() } : {}),
-      ...(typeof payload.taskId === "string" && payload.taskId.trim() ? { taskID: payload.taskId.trim() } : {}),
+      inputOrigin,
+      // Machine collaboration is deliberately route-less. Even malformed or
+      // stale host input cannot claim the active human reply/approval identity.
+      ...(inputOrigin !== "remote-im-machine" && typeof payload.replyId === "string" && payload.replyId.trim()
+        ? { replyID: payload.replyId.trim() }
+        : {}),
+      ...(inputOrigin !== "remote-im-machine" && typeof payload.taskId === "string" && payload.taskId.trim()
+        ? { taskID: payload.taskId.trim() }
+        : {}),
     }
   }
 

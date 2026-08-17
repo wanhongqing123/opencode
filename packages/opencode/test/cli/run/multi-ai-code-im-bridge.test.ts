@@ -109,4 +109,30 @@ describe("parseMultiAiCodeImControlPayload", () => {
       inputOrigin: "local",
     })
   })
+
+  test("parses machine input without granting a reply route", () => {
+    const result = parseMultiAiCodeImControlPayload(
+      {
+        token: "token",
+        kind: "control",
+        command: "submit_user_message",
+        requestId: "req-machine",
+        text: "silent collaboration input",
+        displayText: "来自另一台 AICLI",
+        inputOrigin: "remote-im-machine",
+        replyId: "must-not-bind",
+        taskId: "must-not-bind",
+      },
+      "token",
+    )
+
+    expect(result).toEqual({
+      command: "submit_user_message",
+      requestID: "req-machine",
+      text: "silent collaboration input",
+      displayText: "来自另一台 AICLI",
+      attachments: [],
+      inputOrigin: "remote-im-machine",
+    })
+  })
 })

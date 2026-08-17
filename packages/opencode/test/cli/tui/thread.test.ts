@@ -1072,6 +1072,132 @@ describe("tui thread", () => {
     expect(errors).toEqual([])
   })
 
+  test("keeps a route-less machine steer attached to the active human reply", () => {
+    const started: Array<{ replyID?: string; taskID?: string }> = []
+    const final: Array<{ text: string; replyID?: string; taskID?: string }> = []
+    const errors: string[] = []
+    const handleEvent = createMultiAiCodeImTuiEventHandler({
+      setInputOrigin() {},
+      isRemoteImForwardingActive: () => true,
+      remoteImForwardingSessionID: () => "ses-machine-steer",
+      remoteTaskID: () => "task-human",
+      forgetRemoteTask() {},
+      sendTaskStarted(input) {
+        started.push({ replyID: input?.replyID, taskID: input?.taskID })
+      },
+      sendTaskActivity() {},
+      sendAssistantText() {},
+      sendAssistantFinal(input) {
+        final.push({ text: input.text, replyID: input.replyID, taskID: input.taskID })
+      },
+      sendTurnError(input) {
+        errors.push(input.text)
+      },
+      onControlCommand: () => () => {},
+      sendControlResult() {},
+      close() {},
+    })
+
+    handleEvent({
+      payload: {
+        type: "message.updated",
+        properties: {
+          sessionID: "ses-machine-steer",
+          info: { id: "human-user", role: "user" },
+        },
+      },
+    } as never)
+    handleEvent({
+      payload: {
+        type: "message.part.updated",
+        properties: {
+          sessionID: "ses-machine-steer",
+          part: {
+            id: "human-prompt",
+            messageID: "human-user",
+            type: "text",
+            text: "human prompt",
+            metadata: {
+              kind: "remote_im_model_prompt",
+              remoteImReplyID: "reply-human",
+              remoteImTaskID: "task-human",
+            },
+          },
+        },
+      },
+    } as never)
+    handleEvent({
+      payload: {
+        type: "message.updated",
+        properties: {
+          sessionID: "ses-machine-steer",
+          info: { id: "machine-user", role: "user" },
+        },
+      },
+    } as never)
+    handleEvent({
+      payload: {
+        type: "message.part.updated",
+        properties: {
+          sessionID: "ses-machine-steer",
+          part: {
+            id: "machine-prompt",
+            messageID: "machine-user",
+            type: "text",
+            text: "machine steer",
+            metadata: { kind: "remote_im_model_prompt" },
+          },
+        },
+      },
+    } as never)
+    handleEvent({
+      payload: {
+        type: "session.status",
+        properties: { sessionID: "ses-machine-steer", status: { type: "busy" } },
+      },
+    } as never)
+    handleEvent({
+      payload: {
+        type: "message.updated",
+        properties: {
+          sessionID: "ses-machine-steer",
+          info: { id: "assistant-after-machine", role: "assistant", parentID: "machine-user" },
+        },
+      },
+    } as never)
+    handleEvent({
+      payload: {
+        type: "message.part.updated",
+        properties: {
+          sessionID: "ses-machine-steer",
+          part: {
+            id: "machine-steered-answer",
+            messageID: "assistant-after-machine",
+            type: "text",
+            text: "answer after machine steer",
+            time: { end: Date.now() },
+          },
+        },
+      },
+    } as never)
+    handleEvent({
+      payload: {
+        type: "session.status",
+        properties: { sessionID: "ses-machine-steer", status: { type: "idle" } },
+      },
+    } as never)
+
+    expect(started).toEqual([{ replyID: "reply-human", taskID: "task-human" }])
+    expect(final).toEqual([
+      {
+        text: "answer after machine steer",
+        replyID: "reply-human",
+        taskID: "task-human",
+      },
+    ])
+    expect(errors).toEqual([])
+  })
+
   test("does not forward a local turn while a remote IM reply is not active", () => {
     const sent: string[] = []
     const handleEvent = createMultiAiCodeImTuiEventHandler({

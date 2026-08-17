@@ -150,10 +150,27 @@ function createSourceRoutedMultiAiCodeImTuiEventHandler(
         : replyID
           ? bridge.remoteTaskID?.(replyID)
           : undefined
-    if (!replyID && !taskID) return
+    if (!replyID && !taskID) {
+      // Machine input owns no reply route, but when it steers an active human
+      // turn its child assistant messages still belong to that existing human
+      // route. Without this parent link the machine remains silent as intended,
+      // but it also severs the human reply that was already in progress.
+      const route = routeForSession(message.sessionID)
+      if (!route) return
+      route.userMessageIDs.add(message.id)
+      for (const candidate of messages.values()) {
+        if (candidate.role !== "assistant" || candidate.parentID !== message.id) continue
+        rememberCandidate(candidate)
+        forwardCompletedParts(candidate)
+      }
+      return
+    }
     if (replyID && taskID && bridge.remoteTaskID && bridge.remoteTaskID(replyID) !== taskID) return
     const key = taskID ?? replyID!
-    if (completedRemoteRoutes.has(key)) return
+    if (completedRemoteRoutes.delete(key)) {
+      const completedIndex = completedRemoteRouteOrder.indexOf(key)
+      if (completedIndex >= 0) completedRemoteRouteOrder.splice(completedIndex, 1)
+    }
     const existing = routeForSession(message.sessionID)
     if (existing?.key && existing.key !== key) {
       expireRoute(message.sessionID, existing.terminalID)
@@ -164,12 +181,10 @@ function createSourceRoutedMultiAiCodeImTuiEventHandler(
     route.taskID = taskID
     route.userMessageIDs.add(message.id)
     if (["busy", "retry"].includes(statusBySession.get(message.sessionID) ?? "")) {
-      // The source queue dispatches only from idle. If the busy event wins the
-      // race with persistence of this immutable user part, it belongs to this
-      // accepted prompt; no later busy edge is required to finish the route.
+      // A busy event can win the race with persistence of this immutable user
+      // part; no later busy edge is required to finish the route.
       route.executionStarted = true
     }
-    bridge.setInputOrigin?.("remote-im", message.sessionID)
     if (!route.announced) {
       route.announced = true
       bridge.sendTaskStarted?.({

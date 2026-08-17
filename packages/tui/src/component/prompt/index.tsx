@@ -1074,10 +1074,7 @@ export function Prompt(props: PromptProps) {
           ]
         : []
 
-    const remoteTakeover = multiAiCodeIm?.takeoverForLocalSubmit?.(sessionID)
-    if (remoteTakeover?.wait) await remoteTakeover.wait
     multiAiCodeIm?.setInputOrigin?.("tui", sessionID)
-    const releaseLocalSubmit = () => remoteTakeover?.release()
 
     if (store.mode === "shell") {
       move.startSubmit()
@@ -1091,10 +1088,7 @@ export function Prompt(props: PromptProps) {
           },
           command: inputText,
         })
-        .then((result) => {
-          if (result.error) releaseLocalSubmit()
-        })
-        .catch(releaseLocalSubmit)
+        .catch(() => {})
       setStore("mode", "normal")
     } else if (
       inputText.startsWith("/") &&
@@ -1118,10 +1112,7 @@ export function Prompt(props: PromptProps) {
           variant,
           parts: nonTextParts.filter((x) => x.type === "file"),
         })
-        .then((result) => {
-          if (result.error) releaseLocalSubmit()
-        })
-        .catch(releaseLocalSubmit)
+        .catch(() => {})
     } else {
       move.startSubmit()
       sdk.client.session
@@ -1144,7 +1135,6 @@ export function Prompt(props: PromptProps) {
           { throwOnError: true },
         )
         .catch((error) => {
-          releaseLocalSubmit()
           toast.show({
             title: "Failed to send prompt",
             message: errorMessage(error),

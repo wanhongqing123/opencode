@@ -85,7 +85,6 @@ import { win32DisableProcessedInput, win32FlushInputBuffer } from "./terminal-wi
 import { destroyRenderer } from "./util/renderer"
 import { cliErrorMessage, errorFormat } from "./util/error"
 import { remoteImPromptParts, type RemoteImImageAttachment } from "./util/remote-im-display"
-import { createRemoteImPromptQueue } from "./util/remote-im-prompt-queue"
 import { MultiAiCodeImProvider } from "./context/multi-ai-code-im"
 
 registerOpencodeSpinner()
@@ -150,10 +149,10 @@ export type TuiInput = {
   events?: EventSource
   multiAiCodeImControl?: {
     setInputOrigin?(origin: "remote-im" | "tui", sessionID?: string): void
-    takeoverForLocalSubmit?(sessionID: string): { wait?: Promise<void>; release(): void }
     isRemoteImForwardingActive?(): boolean
     sendTaskStarted?(input?: { replyID?: string; taskID?: string }): void
     registerRemoteTask?(input: { replyID?: string; taskID: string }): void
+    remoteTaskID?(replyID: string): string | undefined
     forgetRemoteTask?(replyID: string): void
     sendTurnError?(input: { text: string; replyID?: string; taskID?: string; messageID?: string }): void
     sendControlResult(input: { requestID: string; ok: boolean; text: string; error?: string }): void
@@ -171,7 +170,7 @@ export type TuiInput = {
               text: string
               displayText: string
               attachments: RemoteImImageAttachment[]
-              inputOrigin: "remote-im" | "local"
+              inputOrigin: "remote-im" | "remote-im-machine" | "local"
               replyID?: string
               taskID?: string
             }
@@ -552,31 +551,6 @@ function App(props: {
       return [`OpenCode IM Goal ${remoteImGoal.status}`, `Objective: ${remoteImGoal.objective}`].join("\n")
     }
 
-    const remoteImPromptQueue = createRemoteImPromptQueue({
-      sessionStatus: (sessionID) => sync.data.session_status?.[sessionID]?.type,
-    })
-    const imControl = props.multiAiCodeImControl
-    const previousLocalTakeover = imControl?.takeoverForLocalSubmit
-    const takeoverForLocalSubmit = (sessionID: string) => remoteImPromptQueue.takeoverForLocalSubmit(sessionID)
-    if (imControl) imControl.takeoverForLocalSubmit = takeoverForLocalSubmit
-    const offRemoteImStatus = event.on("session.status", (evt) => {
-      remoteImPromptQueue.updateStatus(evt.properties.sessionID, evt.properties.status.type)
-    })
-    const offRemoteImIdle = event.on("session.idle", (evt) => {
-      remoteImPromptQueue.updateStatus(evt.properties.sessionID, "idle")
-    })
-    const offRemoteImError = event.on("session.error", (evt) => {
-      if (evt.properties.sessionID) remoteImPromptQueue.release(evt.properties.sessionID)
-    })
-    const offRemoteImPart = event.on("message.part.updated", (evt) => {
-      const part = evt.properties.part
-      if (part.type !== "text" || part.metadata?.kind !== "remote_im_model_prompt") return
-      remoteImPromptQueue.bind({
-        ...(typeof part.metadata.remoteImReplyID === "string" ? { replyID: part.metadata.remoteImReplyID } : {}),
-        ...(typeof part.metadata.remoteImTaskID === "string" ? { taskID: part.metadata.remoteImTaskID } : {}),
-      })
-    })
-
     const unsubscribe = props.multiAiCodeImControl?.onControlCommand((command) => {
       const modelChoices = () =>
         sync.data.provider
@@ -652,49 +626,46 @@ function App(props: {
             signal ? { signal } : undefined,
           )
 
-        if (command.inputOrigin === "remote-im") {
-          const queued = remoteImPromptQueue.enqueue({
-            id: command.taskID ?? command.replyID ?? command.requestID,
-            sessionID,
-            ...(command.replyID ? { replyID: command.replyID } : {}),
-            ...(command.taskID ? { taskID: command.taskID } : {}),
-            async dispatch(signal) {
-              const result = await submit(signal)
-              if (result.error) throw result.error
-            },
-            async cancel() {
-              await sdk.client.session.abort({ sessionID }).catch(() => {})
-            },
-            terminal(error) {
-              props.multiAiCodeImControl?.sendTurnError?.({
-                text: error,
-                ...(command.replyID ? { replyID: command.replyID } : {}),
-                ...(command.taskID ? { taskID: command.taskID } : {}),
-                messageID: `opencode-im-source-${command.taskID ?? command.replyID ?? command.requestID}`,
-              })
-              if (command.replyID) props.multiAiCodeImControl?.forgetRemoteTask?.(command.replyID)
-            },
-          })
-          if (!queued.ok) {
-            props.multiAiCodeImControl?.sendControlResult({
-              requestID: command.requestID,
-              ok: false,
-              text: "",
-              error: queued.error,
-            })
-            return
-          }
-          if (command.taskID) {
+        if (command.inputOrigin !== "local") {
+          const existingTaskID =
+            command.inputOrigin === "remote-im" && command.replyID
+              ? props.multiAiCodeImControl?.remoteTaskID?.(command.replyID)
+              : undefined
+          const continuation = !!(
+            command.inputOrigin === "remote-im" &&
+            command.taskID &&
+            existingTaskID === command.taskID
+          )
+          if (command.inputOrigin === "remote-im" && command.taskID && !continuation) {
             props.multiAiCodeImControl?.registerRemoteTask?.({
               taskID: command.taskID,
               ...(command.replyID ? { replyID: command.replyID } : {}),
             })
           }
-          props.multiAiCodeImControl?.sendControlResult({
-            requestID: command.requestID,
-            ok: true,
-            text: "queued",
-          })
+          if (command.inputOrigin === "remote-im") {
+            props.multiAiCodeImControl?.setInputOrigin?.("remote-im", sessionID)
+          }
+          void submit()
+            .then((result) => {
+              if (result.error) throw result.error
+              props.multiAiCodeImControl?.sendControlResult({
+                requestID: command.requestID,
+                ok: true,
+                text: "steered",
+              })
+            })
+            .catch((error) => {
+              if (command.inputOrigin === "remote-im" && command.replyID && !continuation) {
+                props.multiAiCodeImControl?.forgetRemoteTask?.(command.replyID)
+                props.multiAiCodeImControl?.setInputOrigin?.("tui", sessionID)
+              }
+              props.multiAiCodeImControl?.sendControlResult({
+                requestID: command.requestID,
+                ok: false,
+                text: "",
+                error: errorMessage(error),
+              })
+            })
           return
         }
 
@@ -702,9 +673,7 @@ function App(props: {
           props.multiAiCodeImControl?.setInputOrigin?.("tui", sessionID)
           return submit()
         }
-        const takeover = props.multiAiCodeImControl?.takeoverForLocalSubmit?.(sessionID)
-        const localTask = Promise.resolve(takeover?.wait).then(submitLocal)
-        void localTask
+        void submitLocal()
           .then((result) => {
             if (result.error) throw result.error
             props.multiAiCodeImControl?.sendControlResult({
@@ -714,7 +683,6 @@ function App(props: {
             })
           })
           .catch((error) => {
-            takeover?.release()
             if (command.replyID) props.multiAiCodeImControl?.forgetRemoteTask?.(command.replyID)
             props.multiAiCodeImControl?.sendControlResult({
               requestID: command.requestID,
@@ -1047,16 +1015,6 @@ function App(props: {
       }
     })
     onCleanup(() => {
-      remoteImPromptQueue.close()
-      offRemoteImStatus()
-      offRemoteImIdle()
-      offRemoteImError()
-      offRemoteImPart()
-      if (imControl) {
-        if (imControl.takeoverForLocalSubmit === takeoverForLocalSubmit) {
-          imControl.takeoverForLocalSubmit = previousLocalTakeover
-        }
-      }
       unsubscribe?.()
     })
   })

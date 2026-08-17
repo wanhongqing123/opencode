@@ -28,11 +28,12 @@ export type QueueInput = {
   initialInput?: string
   trace?: Trace
   onSubmit?: (prompt: RunPrompt, active?: RunPrompt) => void
+  onSteer?: (prompt: RunPrompt, active: RunPrompt) => void | Promise<void>
   onStart?: (prompt: RunPrompt) => void
   onFinish?: (prompt: RunPrompt, result: QueueTurnResult) => void
   onSend?: (prompt: RunPrompt) => void
   onNewSession?: (prompt: RunPrompt) => QueueNewSessionResult | Promise<QueueNewSessionResult>
-  registerExternalSubmit?: (submit: (prompt: RunPrompt) => { ok: true } | { ok: false; error: string }) => () => void
+  registerExternalSubmit?: (submit: (prompt: RunPrompt) => QueueSubmitResult) => () => void
   run: (prompt: RunPrompt, signal: AbortSignal) => Promise<void>
 }
 
@@ -42,6 +43,7 @@ export type QueueTurnResult =
   | { status: "error"; error: unknown }
 
 export type QueueNewSessionResult = void | { ok: true } | { ok: false; error: string }
+export type QueueSubmitResult = { ok: true; completion?: Promise<void> } | { ok: false; error: string }
 
 type State = {
   queue: RunPrompt[]
@@ -319,7 +321,7 @@ export async function runPromptQueue(input: QueueInput): Promise<void> {
     })()
   }
 
-  const submit = (prompt: RunPrompt): { ok: true } | { ok: false; error: string } => {
+  const submit = (prompt: RunPrompt): QueueSubmitResult => {
     if (state.closed) {
       return { ok: false, error: "prompt queue is closed" }
     }
@@ -328,10 +330,11 @@ export async function runPromptQueue(input: QueueInput): Promise<void> {
       return { ok: false, error: "prompt is empty" }
     }
 
-    if (prompt.inputOrigin !== "remote-im") input.onSubmit?.(prompt, state.active)
+    const remoteInput = prompt.inputOrigin === "remote-im" || prompt.inputOrigin === "remote-im-machine"
+    if (!remoteInput) input.onSubmit?.(prompt, state.active)
 
     if (prompt.mode !== "shell" && isExitCommand(prompt.text)) {
-      if (prompt.inputOrigin === "remote-im") {
+      if (remoteInput) {
         return { ok: false, error: "remote /exit is not supported" }
       }
       input.footer.close()
@@ -347,6 +350,12 @@ export async function runPromptQueue(input: QueueInput): Promise<void> {
       !prompt.command &&
       !isNewCommand(prompt.text)
     ) {
+      // Remote IM is interactive input, not a future provider turn. The host
+      // owns human reply correlation; machine input is deliberately route-less.
+      if (input.onSteer && remoteInput) {
+        const completion = input.onSteer(prompt, active)
+        return completion ? { ok: true, completion: Promise.resolve(completion) } : { ok: true }
+      }
       const queued: FooterQueuedPrompt = {
         messageID: MessageID.ascending(),
         partID: PartID.ascending(),

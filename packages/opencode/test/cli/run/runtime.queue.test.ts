@@ -567,6 +567,145 @@ describe("run runtime queue", () => {
     ])
   })
 
+  test("dispatches machine input as an immediate silent steer", async () => {
+    const ui = footer()
+    const steers: Array<{ prompt: string; active: string }> = []
+    const takeovers: string[] = []
+    let submit: ((prompt: RunPrompt) => { ok: true } | { ok: false; error: string }) | undefined
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+
+    const task = runPromptQueue({
+      footer: ui.api,
+      registerExternalSubmit(next) {
+        submit = next
+        return () => {}
+      },
+      onSubmit: (prompt) => takeovers.push(prompt.text),
+      onSteer: (prompt, active) => {
+        steers.push({ prompt: prompt.text, active: active.text })
+      },
+      run: async () => gate,
+    })
+
+    ui.submit("local active")
+    await waitFor(() => ui.commits.length === 1)
+    const queueEvents = ui.events.filter((event) => event.type === "queue").length
+    expect(
+      submit?.({
+        text: "machine steer",
+        inputOrigin: "remote-im-machine",
+        parts: [],
+      }),
+    ).toEqual({ ok: true })
+
+    expect(steers).toEqual([{ prompt: "machine steer", active: "local active" }])
+    expect(takeovers).toEqual(["local active"])
+    expect(ui.events.filter((event) => event.type === "queue")).toHaveLength(queueEvents)
+
+    release()
+    ui.api.close()
+    await task
+  })
+
+  test("exposes an immediate remote steer failure to the control caller", async () => {
+    const ui = footer()
+    let submit:
+      | ((prompt: RunPrompt) => { ok: true; completion?: Promise<void> } | { ok: false; error: string })
+      | undefined
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const task = runPromptQueue({
+      footer: ui.api,
+      registerExternalSubmit(next) {
+        submit = next
+        return () => {}
+      },
+      onSteer: async () => {
+        throw new Error("steer failed")
+      },
+      run: async () => gate,
+    })
+
+    ui.submit("local active")
+    await waitFor(() => ui.commits.length === 1)
+    const result = submit?.({
+      text: "machine steer",
+      inputOrigin: "remote-im-machine",
+      parts: [],
+    })
+
+    expect(result?.ok).toBe(true)
+    if (!result?.ok) throw new Error("expected steer completion")
+    await expect(result.completion).rejects.toThrow("steer failed")
+
+    release()
+    ui.api.close()
+    await task
+  })
+
+  test("steers every remote human input immediately without a future-turn queue", async () => {
+    const ui = footer()
+    const steers: string[] = []
+    let submit: ((prompt: RunPrompt) => { ok: true } | { ok: false; error: string }) | undefined
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+
+    const task = runPromptQueue({
+      footer: ui.api,
+      registerExternalSubmit(next) {
+        submit = next
+        return () => {}
+      },
+      onSteer: (prompt) => {
+        steers.push(prompt.text)
+      },
+      run: async () => gate,
+    })
+
+    submit?.({
+      text: "human active",
+      inputOrigin: "remote-im",
+      remoteImReplyID: "reply-active",
+      remoteImTaskID: "task-active",
+      parts: [],
+    })
+    await waitFor(() => ui.commits.length === 1)
+    const queueEvents = ui.events.filter((event) => event.type === "queue").length
+
+    expect(
+      submit?.({
+        text: "same identity",
+        inputOrigin: "remote-im",
+        remoteImReplyID: "reply-active",
+        remoteImTaskID: "task-active",
+        parts: [],
+      }),
+    ).toEqual({ ok: true })
+    expect(
+      submit?.({
+        text: "different identity",
+        inputOrigin: "remote-im",
+        remoteImReplyID: "reply-other",
+        remoteImTaskID: "task-other",
+        parts: [],
+      }),
+    ).toEqual({ ok: true })
+
+    expect(steers).toEqual(["same identity", "different identity"])
+    expect(ui.events.filter((event) => event.type === "queue")).toHaveLength(queueEvents)
+
+    release()
+    ui.api.close()
+    await task
+  })
+
   test("reports local takeover immediately while a remote turn is still active", async () => {
     const ui = footer()
     const takeover: Array<{ submitted: string; active?: string }> = []

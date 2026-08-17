@@ -48,6 +48,16 @@ describe("remote IM display text", () => {
     )
   })
 
+  test("keeps route-less machine input free of human reply authority", () => {
+    expect(remoteImPromptParts("machine model input", "来自另一台 AICLI")[0]).toEqual(
+      expect.objectContaining({
+        metadata: {
+          kind: "remote_im_model_prompt",
+        },
+      }),
+    )
+  })
+
   test("submits remote images as native file parts", () => {
     expect(
       remoteImPromptParts("wrapped model prompt", "来自 IM 的图片", [
