@@ -1,16 +1,19 @@
-import { describe, expect, test } from "bun:test"
-import fs from "fs/promises"
-import os from "os"
+import { describe, expect, it } from "bun:test"
 import path from "path"
 import { Global } from "@opencode-ai/core/global"
 
-describe("global paths", () => {
-  test("tmp path is under the system temp directory", () => {
-    expect(Global.Path.tmp).toBe(path.join(os.tmpdir(), "opencode"))
-    expect(Global.make().tmp).toBe(Global.Path.tmp)
-  })
+describe("Global.resolvePaths", () => {
+  it("places every mutable OpenCode path below the managed account root", () => {
+    const root = path.join(path.sep, "accounts", "alice", "aicli", "opencode")
+    const paths = Global.resolvePaths(root)
 
-  test("tmp path is created on module load", async () => {
-    expect((await fs.stat(Global.Path.tmp)).isDirectory()).toBe(true)
+    expect(paths.data).toBe(path.join(root, "data"))
+    expect(paths.cache).toBe(path.join(root, "cache"))
+    expect(paths.config).toBe(path.join(root, "config"))
+    expect(paths.state).toBe(path.join(root, "state"))
+    expect(paths.tmp).toBe(path.join(root, "tmp"))
+    expect(paths.bin).toBe(path.join(root, "cache", "bin"))
+    expect(paths.log).toBe(path.join(root, "data", "log"))
+    expect(paths.repos).toBe(path.join(root, "data", "repos"))
   })
 })

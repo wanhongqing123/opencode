@@ -121,6 +121,31 @@ it.instance("provider loaded from env variable", () =>
   }),
 )
 
+it.instance("managed catalog keeps environment credentials over stored api keys", () =>
+  Effect.gen(function* () {
+    yield* setProcessEnv("ANTHROPIC_API_KEY", "managed-api-key")
+    yield* setProcessEnv("OPENCODE_MODELS_PATH", path.join(Global.Path.cache, "missing-managed-models.json"))
+
+    const authPath = path.join(Global.Path.data, "auth.json")
+    const original = yield* Effect.promise(() => Filesystem.readText(authPath).catch(() => undefined))
+    yield* Effect.acquireRelease(
+      Effect.promise(() =>
+        Filesystem.write(authPath, JSON.stringify({ anthropic: { type: "api", key: "stale-api-key" } })),
+      ),
+      () =>
+        Effect.promise(async () => {
+          if (original !== undefined) await Filesystem.write(authPath, original)
+          else await unlink(authPath).catch(() => undefined)
+        }),
+    )
+
+    const providers = yield* list
+    expect(providers[ProviderV2.ID.anthropic]).toBeDefined()
+    expect(providers[ProviderV2.ID.anthropic].source).toBe("env")
+    expect(providers[ProviderV2.ID.anthropic].key).toBe("managed-api-key")
+  }),
+)
+
 it.instance(
   "provider loaded from config with apiKey option",
   Effect.gen(function* () {

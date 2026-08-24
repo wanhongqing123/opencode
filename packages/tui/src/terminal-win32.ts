@@ -53,6 +53,45 @@ export function win32FlushInputBuffer() {
   k32!.symbols.FlushConsoleInputBuffer(handle)
 }
 
+type FullRepaintRenderer = { requestRender(): void }
+
+export type Win32ScrollLayout = Readonly<{
+  scrollTop: number
+  scrollHeight: number
+  width: number
+  height: number
+  scrollbarVisible: boolean
+}>
+
+/**
+ * OpenTUI 0.4.x has no public full-repaint method. Its incremental renderer
+ * can leave moved cells behind under ConPTY, so request the same full repaint
+ * that OpenTUI itself uses after terminal resume and capability changes.
+ */
+export function win32RequestFullRepaint(renderer: FullRepaintRenderer, platform: string = process.platform) {
+  if (platform !== "win32") return false
+  const internal = renderer as FullRepaintRenderer & { forceFullRepaintRequested: boolean }
+  internal.forceFullRepaintRequested = true
+  renderer.requestRender()
+  return true
+}
+
+export function createWin32MovedCellRepaint(renderer: FullRepaintRenderer, platform: string = process.platform) {
+  let previous: string | undefined
+
+  return (layout: Win32ScrollLayout) => {
+    if (platform !== "win32") return false
+    const current = `${layout.scrollTop}:${layout.scrollHeight}:${layout.width}:${layout.height}:${layout.scrollbarVisible}`
+    if (previous === undefined) {
+      previous = current
+      return false
+    }
+    if (previous === current) return false
+    previous = current
+    return win32RequestFullRepaint(renderer, platform)
+  }
+}
+
 let unhook: (() => void) | undefined
 
 /**

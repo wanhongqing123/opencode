@@ -254,6 +254,10 @@ export const RunCommand = effectCmd({
         hidden: true,
         default: false,
       })
+      .option("multi-ai-code-im-ipc", {
+        type: "string",
+        hidden: true,
+      })
       .option("demo", {
         type: "boolean",
         default: false,
@@ -897,6 +901,7 @@ export const RunCommand = effectCmd({
             thinking,
             backgroundSubagents: flags.experimentalBackgroundSubagents,
             demo: args.demo,
+            multiAiCodeImIpc: (args as { "multi-ai-code-im-ipc"?: string })["multi-ai-code-im-ipc"],
           })
         } catch (error) {
           dieInteractive(error)
@@ -934,6 +939,7 @@ export const RunCommand = effectCmd({
             thinking,
             backgroundSubagents: flags.experimentalBackgroundSubagents,
             demo: args.demo,
+            multiAiCodeImIpc: (args as { "multi-ai-code-im-ipc"?: string })["multi-ai-code-im-ipc"],
           })
         } catch (error) {
           dieInteractive(error)
@@ -977,6 +983,7 @@ type MiniCommandInput = {
   replay?: boolean
   replayLimit?: number
   demo?: boolean
+  multiAiCodeImIpc?: string
 }
 
 export async function runMini(input: MiniCommandInput) {
@@ -1011,6 +1018,8 @@ export async function runMini(input: MiniCommandInput) {
     yolo: false,
     "dangerously-skip-permissions": false,
     dangerouslySkipPermissions: false,
+    "multi-ai-code-im-ipc": input.multiAiCodeImIpc,
+    multiAiCodeImIpc: input.multiAiCodeImIpc,
     demo: input.demo ?? false,
   })
 }

@@ -1588,16 +1588,20 @@ const layer = Layer.effect(
           })
         }
 
-        // load apikeys
-        const auths = yield* auth.all().pipe(Effect.orDie)
-        for (const [id, provider] of Object.entries(auths)) {
-          const providerID = ProviderV2.ID.make(id)
-          if (disabled.has(providerID)) continue
-          if (provider.type === "api") {
-            mergeProvider(providerID, {
-              source: "api",
-              key: provider.key,
-            })
+        // A packaged catalog is the Multi-AI Code managed mode marker. Its
+        // reviewed environment credentials must not be replaced by stale keys
+        // saved through an older OpenCode auth flow.
+        if (!process.env.OPENCODE_MODELS_PATH) {
+          const auths = yield* auth.all().pipe(Effect.orDie)
+          for (const [id, provider] of Object.entries(auths)) {
+            const providerID = ProviderV2.ID.make(id)
+            if (disabled.has(providerID)) continue
+            if (provider.type === "api") {
+              mergeProvider(providerID, {
+                source: "api",
+                key: provider.key,
+              })
+            }
           }
         }
 

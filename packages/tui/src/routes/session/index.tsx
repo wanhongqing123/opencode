@@ -74,6 +74,7 @@ import { useTuiConfig } from "../../config"
 import { useClipboard } from "../../context/clipboard"
 import { nextThinkingMode, reasoningSummary, useThinkingMode, type ThinkingMode } from "../../context/thinking"
 import { getScrollAcceleration } from "../../util/scroll"
+import { visibleRemoteImReplyText } from "../../util/remote-im-display"
 import { collapseToolOutput } from "../../util/collapse-tool-output"
 import { usePluginRuntime } from "../../plugin/runtime"
 import { DialogRetryAction } from "../../component/dialog-retry-action"
@@ -81,6 +82,12 @@ import { getRevertDiffFiles } from "../../util/revert-diff"
 import { OPENCODE_BASE_MODE, useBindings, useCommandShortcut, useOpencodeKeymap } from "../../keymap"
 import { usePathFormatter } from "../../context/path-format"
 import { LocationProvider } from "../../context/location"
+import {
+  SESSION_SCROLLBAR_DEFAULT_MIGRATION_KEY,
+  SESSION_SCROLLBAR_VISIBLE_KEY,
+  shouldApplySessionScrollbarDefault,
+} from "./scrollbar"
+import { createWin32MovedCellRepaint } from "../../terminal-win32"
 
 addDefaultParsers(parsers.parsers)
 
@@ -253,16 +260,17 @@ export function Session() {
   })
 
   const dimensions = useTerminalDimensions()
-  const [sidebar, setSidebar] = kv.signal<"auto" | "hide">("sidebar", "auto")
+  const terminalEnvironment = useTuiTerminalEnvironment()
+  const [sidebar, setSidebar] = kv.signal<"auto" | "hide">("sidebar", "hide")
   const [sidebarOpen, setSidebarOpen] = createSignal(false)
   const [conceal, setConceal] = createSignal(true)
   const thinking = useThinkingMode()
   const thinkingMode = thinking.mode
   const showThinking = createMemo(() => true)
   const [timestamps, setTimestamps] = kv.signal<"hide" | "show">("timestamps", "hide")
-  const [showDetails, setShowDetails] = kv.signal("tool_details_visibility", true)
+  const [showDetails, setShowDetails] = kv.signal("tool_details_visibility", false)
   const [showAssistantMetadata, _setShowAssistantMetadata] = kv.signal("assistant_metadata_visibility", true)
-  const [showScrollbar, setShowScrollbar] = kv.signal("scrollbar_visible", false)
+  const [showScrollbar, setShowScrollbar] = kv.signal(SESSION_SCROLLBAR_VISIBLE_KEY, true)
   const [diffWrapMode] = kv.signal<"word" | "none">("diff_wrap_mode", "word")
   const [_animationsEnabled, _setAnimationsEnabled] = kv.signal("animations_enabled", true)
   const [showGenericToolOutput, setShowGenericToolOutput] = kv.signal("generic_tool_output_visibility", false)
@@ -282,6 +290,19 @@ export function Session() {
   const toast = useToast()
   const sdk = useSDK()
   const editor = useEditorContext()
+
+  createEffect(() => {
+    if (kv.get(SESSION_SCROLLBAR_DEFAULT_MIGRATION_KEY) === true) return
+    if (
+      shouldApplySessionScrollbarDefault({
+        visible: kv.get(SESSION_SCROLLBAR_VISIBLE_KEY),
+        migrated: kv.get(SESSION_SCROLLBAR_DEFAULT_MIGRATION_KEY),
+      })
+    ) {
+      setShowScrollbar(() => true)
+    }
+    kv.set(SESSION_SCROLLBAR_DEFAULT_MIGRATION_KEY, true)
+  })
 
   createEffect(() => {
     const sessionID = route.sessionID
@@ -353,6 +374,22 @@ export function Session() {
   const keymap = useOpencodeKeymap()
   const dialog = useDialog()
   const renderer = useRenderer()
+
+  if (terminalEnvironment.platform === "win32") {
+    const repaintMovedCells = createWin32MovedCellRepaint(renderer, terminalEnvironment.platform)
+    const observeScrollLayout = () => {
+      if (!scroll || scroll.isDestroyed) return
+      repaintMovedCells({
+        scrollTop: scroll.scrollTop,
+        scrollHeight: scroll.scrollHeight,
+        width: scroll.width,
+        height: scroll.height,
+        scrollbarVisible: showScrollbar(),
+      })
+    }
+    renderer.on("frame", observeScrollLayout)
+    onCleanup(() => renderer.off("frame", observeScrollLayout))
+  }
 
   event.on("session.status", (evt) => {
     if (evt.properties.sessionID !== route.sessionID) return
@@ -1686,14 +1723,15 @@ function ReasoningHeader(props: {
 function TextPart(props: { last: boolean; part: TextPart; message: AssistantMessage }) {
   const ctx = use()
   const { theme, syntax } = useTheme()
+  const text = createMemo(() => visibleRemoteImReplyText(props.part.text))
   return (
-    <Show when={props.part.text.trim()}>
+    <Show when={text().trim()}>
       <box ref={(el: BoxRenderable) => alwaysSeparate.add(el)} paddingLeft={3} marginTop={1} flexShrink={0}>
         <markdown
           syntaxStyle={syntax()}
           streaming={true}
           internalBlockMode="top-level"
-          content={props.part.text.trim()}
+          content={text().trim()}
           tableOptions={{ style: "grid" }}
           conceal={ctx.conceal()}
           fg={theme.markdownText}

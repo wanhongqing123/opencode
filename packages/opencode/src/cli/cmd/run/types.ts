@@ -34,7 +34,12 @@ export type RunPrompt = {
   messageID?: string
   partID?: string
   text: string
+  displayText?: string
+  inputOrigin?: "remote-im" | "remote-im-machine" | "local"
+  remoteImReplyID?: string
+  remoteImTaskID?: string
   parts: RunPromptPart[]
+  model?: PromptModel
   mode?: "shell"
   command?: {
     name: string
@@ -70,6 +75,7 @@ export type RunInput = {
   thinking: boolean
   backgroundSubagents: boolean
   demo?: boolean
+  multiAiCodeImIpc?: string
 }
 
 // The semantic role of a scrollback entry. Maps 1:1 to theme colors.

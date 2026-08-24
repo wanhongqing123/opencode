@@ -2087,6 +2087,37 @@ describe("OPENCODE_PERMISSION env var", () => {
 })
 
 describe("OPENCODE_CONFIG_CONTENT token substitution", () => {
+  it.instance(
+    "keeps managed model policy authoritative over stale account provider config",
+    () =>
+      withProcessEnv(
+        "OPENCODE_CONFIG_CONTENT",
+        JSON.stringify({
+          $schema: "https://opencode.ai/config.json",
+          model: "deepseek/deepseek-v4-flash",
+          small_model: "zhipu/glm-5.2",
+          enabled_providers: ["deepseek", "zhipu"],
+        }),
+        Effect.gen(function* () {
+          const config = yield* Config.use.get()
+          expect(config.model).toBe("deepseek/deepseek-v4-flash")
+          expect(config.small_model).toBe("zhipu/glm-5.2")
+          expect(config.enabled_providers).toEqual(["deepseek", "zhipu"])
+          expect(config.provider).toBeUndefined()
+          expect(config.disabled_providers).toBeUndefined()
+        }),
+      ),
+    {
+      config: {
+        model: "stale/model",
+        small_model: "stale/small",
+        provider: { deepseek: { options: { baseURL: "https://stale.example.com" } } },
+        enabled_providers: ["stale"],
+        disabled_providers: ["zhipu"],
+      },
+    },
+  )
+
   it.instance("substitutes {env:} tokens in OPENCODE_CONFIG_CONTENT", () =>
     withProcessEnv(
       "TEST_CONFIG_VAR",

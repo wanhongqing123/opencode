@@ -168,21 +168,24 @@ describe("Config", () => {
     ).pipe(
       Effect.flatMap((tmp) =>
         Effect.gen(function* () {
+          const global = path.join(tmp.path, "global")
           yield* Effect.promise(() =>
-            Promise.all([
-              fs.writeFile(
-                path.join(tmp.path, "opencode.json"),
-                JSON.stringify({ $schema: "base", providers: { base: provider } }),
-              ),
-              fs.writeFile(
-                path.join(tmp.path, "opencode.jsonc"),
-                `{
+            fs.mkdir(global, { recursive: true }).then(() =>
+              Promise.all([
+                fs.writeFile(
+                  path.join(global, "opencode.json"),
+                  JSON.stringify({ $schema: "base", providers: { base: provider } }),
+                ),
+                fs.writeFile(
+                  path.join(global, "opencode.jsonc"),
+                  `{
                   // Later global files override scalar fields while retaining providers.
                   "$schema": "last",
                   "providers": { "last": ${JSON.stringify(provider)} },
                 }`,
-              ),
-            ]),
+                ),
+              ]),
+            ),
           )
           return yield* Effect.gen(function* () {
             const config = yield* Config.Service
@@ -192,11 +195,11 @@ describe("Config", () => {
             expect(documents.map((document) => document.type)).toEqual(["document", "document"])
             expect(documents.map((document) => document.info.$schema)).toEqual(["base", "last"])
             expect(documents[0]).toBeInstanceOf(Config.Document)
-            expect(documents[0]?.path).toBe(path.join(tmp.path, "opencode.json"))
+            expect(documents[0]?.path).toBe(path.join(global, "opencode.json"))
             expect(documents[1]?.info.providers?.last).toBeInstanceOf(ConfigProvider.Info)
 
             yield* Effect.promise(() =>
-              fs.writeFile(path.join(tmp.path, "opencode.jsonc"), JSON.stringify({ $schema: "changed" })),
+              fs.writeFile(path.join(global, "opencode.jsonc"), JSON.stringify({ $schema: "changed" })),
             )
             expect(
               (yield* config.entries())
@@ -238,13 +241,17 @@ describe("Config", () => {
     ).pipe(
       Effect.flatMap((tmp) =>
         Effect.gen(function* () {
-          const file = path.join(tmp.path, "opencode.json")
+          const global = path.join(tmp.path, "global")
+          const file = path.join(global, "opencode.json")
           const contents = JSON.stringify({
             shell: "/bin/zsh",
             experimental: { policies: [{ effect: "deny", action: "provider.use", resource: "openai" }] },
             providers: { local: provider },
           })
-          yield* Effect.promise(() => fs.writeFile(file, contents))
+          yield* Effect.promise(async () => {
+            await fs.mkdir(global, { recursive: true })
+            await fs.writeFile(file, contents)
+          })
 
           return yield* Effect.gen(function* () {
             const config = yield* Config.Service
@@ -271,88 +278,91 @@ describe("Config", () => {
     ).pipe(
       Effect.flatMap((tmp) =>
         Effect.gen(function* () {
+          const global = path.join(tmp.path, "global")
           yield* Effect.promise(() =>
-            fs.writeFile(
-              path.join(tmp.path, "opencode.json"),
-              JSON.stringify({
-                shell: "/bin/bash",
-                model: "anthropic/claude",
-                default_agent: "reviewer",
-                autoupdate: "notify",
-                share: "disabled",
-                enterprise: { url: "https://share.example.com" },
-                username: "test-user",
-                permissions: [
-                  { action: "bash", resource: "*", effect: "ask" },
-                  { action: "bash", resource: "git status", effect: "allow" },
-                ],
-                agents: {
-                  reviewer: {
-                    model: "openrouter/openai/gpt-5",
-                    variant: "high",
-                    request: {
-                      headers: { "x-agent": "reviewer" },
-                      body: { reasoningEffort: "high" },
-                    },
-                    description: "Review changes for correctness",
-                    system: "Find regressions.",
-                    mode: "subagent",
-                    hidden: false,
-                    color: "warning",
-                    steps: 12,
-                    disabled: false,
-                    permissions: [{ action: "edit", resource: "*", effect: "deny" }],
-                  },
-                },
-                snapshots: false,
-                watcher: { ignore: ["node_modules/**", "dist/**", ".git"] },
-                formatter: {
-                  prettier: { disabled: true },
-                  custom: { command: ["custom-fmt", "$FILE"], extensions: [".foo"] },
-                },
-                lsp: { typescript: { disabled: true }, custom: { command: ["custom-lsp"], extensions: [".foo"] } },
-                attachments: {
-                  image: { auto_resize: false, max_width: 1200, max_height: 900, max_base64_bytes: 1048576 },
-                },
-                tool_output: { max_lines: 1000, max_bytes: 32768 },
-                mcp: {
-                  timeout: { startup: 5000, request: 60000 },
-                  servers: {
-                    local: {
-                      type: "local",
-                      command: ["node", "./mcp/server.js"],
-                      environment: { API_KEY: "secret" },
+            fs.mkdir(global, { recursive: true }).then(() =>
+              fs.writeFile(
+                path.join(global, "opencode.json"),
+                JSON.stringify({
+                  shell: "/bin/bash",
+                  model: "anthropic/claude",
+                  default_agent: "reviewer",
+                  autoupdate: "notify",
+                  share: "disabled",
+                  enterprise: { url: "https://share.example.com" },
+                  username: "test-user",
+                  permissions: [
+                    { action: "bash", resource: "*", effect: "ask" },
+                    { action: "bash", resource: "git status", effect: "allow" },
+                  ],
+                  agents: {
+                    reviewer: {
+                      model: "openrouter/openai/gpt-5",
+                      variant: "high",
+                      request: {
+                        headers: { "x-agent": "reviewer" },
+                        body: { reasoningEffort: "high" },
+                      },
+                      description: "Review changes for correctness",
+                      system: "Find regressions.",
+                      mode: "subagent",
+                      hidden: false,
+                      color: "warning",
+                      steps: 12,
                       disabled: false,
-                      timeout: { request: 10000 },
-                    },
-                    remote: {
-                      type: "remote",
-                      url: "https://mcp.example.com/mcp",
-                      headers: { Authorization: "Bearer token" },
-                      oauth: { client_id: "client", scope: "read write", callback_port: 19876 },
-                      disabled: true,
-                      timeout: { startup: 15000 },
+                      permissions: [{ action: "edit", resource: "*", effect: "deny" }],
                     },
                   },
-                },
-                compaction: {
-                  auto: true,
-                  prune: false,
-                  keep: { tokens: 2000 },
-                  buffer: 10000,
-                },
-                skills: ["./skills", "~/shared-skills", "https://example.com/.well-known/skills/"],
-                instructions: ["CONTRIBUTING.md", ".cursor/rules/*.md", "https://example.com/shared-rules.md"],
-                references: {
-                  local: { path: "../library" },
-                  sdk: { repository: "github.com/example/sdk", branch: "main" },
-                  shorthand: "github.com/example/docs",
-                },
-                plugins: [
-                  "opencode-helicone-session",
-                  { package: "@my-org/audit-plugin", options: { endpoint: "https://audit.example.com" } },
-                ],
-              }),
+                  snapshots: false,
+                  watcher: { ignore: ["node_modules/**", "dist/**", ".git"] },
+                  formatter: {
+                    prettier: { disabled: true },
+                    custom: { command: ["custom-fmt", "$FILE"], extensions: [".foo"] },
+                  },
+                  lsp: { typescript: { disabled: true }, custom: { command: ["custom-lsp"], extensions: [".foo"] } },
+                  attachments: {
+                    image: { auto_resize: false, max_width: 1200, max_height: 900, max_base64_bytes: 1048576 },
+                  },
+                  tool_output: { max_lines: 1000, max_bytes: 32768 },
+                  mcp: {
+                    timeout: { startup: 5000, request: 60000 },
+                    servers: {
+                      local: {
+                        type: "local",
+                        command: ["node", "./mcp/server.js"],
+                        environment: { API_KEY: "secret" },
+                        disabled: false,
+                        timeout: { request: 10000 },
+                      },
+                      remote: {
+                        type: "remote",
+                        url: "https://mcp.example.com/mcp",
+                        headers: { Authorization: "Bearer token" },
+                        oauth: { client_id: "client", scope: "read write", callback_port: 19876 },
+                        disabled: true,
+                        timeout: { startup: 15000 },
+                      },
+                    },
+                  },
+                  compaction: {
+                    auto: true,
+                    prune: false,
+                    keep: { tokens: 2000 },
+                    buffer: 10000,
+                  },
+                  skills: ["./skills", "~/shared-skills", "https://example.com/.well-known/skills/"],
+                  instructions: ["CONTRIBUTING.md", ".cursor/rules/*.md", "https://example.com/shared-rules.md"],
+                  references: {
+                    local: { path: "../library" },
+                    sdk: { repository: "github.com/example/sdk", branch: "main" },
+                    shorthand: "github.com/example/docs",
+                  },
+                  plugins: [
+                    "opencode-helicone-session",
+                    { package: "@my-org/audit-plugin", options: { endpoint: "https://audit.example.com" } },
+                  ],
+                }),
+              ),
             ),
           )
 
@@ -459,16 +469,19 @@ describe("Config", () => {
     ).pipe(
       Effect.flatMap((tmp) =>
         Effect.gen(function* () {
+          const global = path.join(tmp.path, "global")
           yield* Effect.promise(() =>
-            fs.writeFile(
-              path.join(tmp.path, "opencode.json"),
-              JSON.stringify({
-                reference: {
-                  local: { path: "../library" },
-                  sdk: { repository: "github.com/example/sdk", branch: "main" },
-                  shorthand: "github.com/example/docs",
-                },
-              }),
+            fs.mkdir(global, { recursive: true }).then(() =>
+              fs.writeFile(
+                path.join(global, "opencode.json"),
+                JSON.stringify({
+                  reference: {
+                    local: { path: "../library" },
+                    sdk: { repository: "github.com/example/sdk", branch: "main" },
+                    shorthand: "github.com/example/docs",
+                  },
+                }),
+              ),
             ),
           )
 
@@ -495,81 +508,84 @@ describe("Config", () => {
     ).pipe(
       Effect.flatMap((tmp) =>
         Effect.gen(function* () {
+          const global = path.join(tmp.path, "global")
           yield* Effect.promise(() =>
-            fs.writeFile(
-              path.join(tmp.path, "opencode.json"),
-              JSON.stringify({
-                shell: "/bin/zsh",
-                default_agent: "reviewer",
-                snapshot: false,
-                autoshare: true,
-                permission: {
-                  bash: "ask",
-                  edit: { "*.md": "allow", "*": "deny" },
-                  question: "deny",
-                },
-                agent: {
-                  reviewer: {
-                    prompt: "Review changes.",
-                    disable: true,
-                    temperature: 0.2,
-                    permission: { read: "allow" },
+            fs.mkdir(global, { recursive: true }).then(() =>
+              fs.writeFile(
+                path.join(global, "opencode.json"),
+                JSON.stringify({
+                  shell: "/bin/zsh",
+                  default_agent: "reviewer",
+                  snapshot: false,
+                  autoshare: true,
+                  permission: {
+                    bash: "ask",
+                    edit: { "*.md": "allow", "*": "deny" },
+                    question: "deny",
                   },
-                },
-                plugin: [
-                  "opencode-helicone-session",
-                  ["@my-org/audit-plugin", { endpoint: "https://audit.example.com" }],
-                ],
-                skills: { paths: ["./skills"], urls: ["https://example.com/.well-known/skills/"] },
-                references: {
-                  docs: { path: "../docs", description: "Use for product documentation", hidden: true },
-                },
-                attachment: { image: { auto_resize: false, max_width: 1200 } },
-                provider: {
-                  custom: {
-                    options: { apiKey: "secret" },
-                    models: {
-                      model: {
-                        options: { reasoningEffort: "high" },
-                        variants: { fast: { temperature: 0.2 } },
-                      },
+                  agent: {
+                    reviewer: {
+                      prompt: "Review changes.",
+                      disable: true,
+                      temperature: 0.2,
+                      permission: { read: "allow" },
                     },
                   },
-                  openai: {
-                    npm: "@ai-sdk/openai",
-                    options: { apiKey: "secret", organization: "org" },
-                    models: {
-                      model: {
-                        options: { temperature: 0.3, reasoningEffort: "high", serviceTier: "priority" },
-                        variants: { high: { reasoningEffort: "high", reasoningSummary: "auto" } },
+                  plugin: [
+                    "opencode-helicone-session",
+                    ["@my-org/audit-plugin", { endpoint: "https://audit.example.com" }],
+                  ],
+                  skills: { paths: ["./skills"], urls: ["https://example.com/.well-known/skills/"] },
+                  references: {
+                    docs: { path: "../docs", description: "Use for product documentation", hidden: true },
+                  },
+                  attachment: { image: { auto_resize: false, max_width: 1200 } },
+                  provider: {
+                    custom: {
+                      options: { apiKey: "secret" },
+                      models: {
+                        model: {
+                          options: { reasoningEffort: "high" },
+                          variants: { fast: { temperature: 0.2 } },
+                        },
                       },
                     },
-                  },
-                  anthropic: {
-                    npm: "@ai-sdk/anthropic",
-                    models: {
-                      model: {
-                        options: {
-                          effort: "high",
-                          taskBudget: 4096,
-                          metadata: { userId: "user-1" },
+                    openai: {
+                      npm: "@ai-sdk/openai",
+                      options: { apiKey: "secret", organization: "org" },
+                      models: {
+                        model: {
+                          options: { temperature: 0.3, reasoningEffort: "high", serviceTier: "priority" },
+                          variants: { high: { reasoningEffort: "high", reasoningSummary: "auto" } },
+                        },
+                      },
+                    },
+                    anthropic: {
+                      npm: "@ai-sdk/anthropic",
+                      models: {
+                        model: {
+                          options: {
+                            effort: "high",
+                            taskBudget: 4096,
+                            metadata: { userId: "user-1" },
+                          },
                         },
                       },
                     },
                   },
-                },
-                compaction: { auto: true, tail_turns: 3, preserve_recent_tokens: 2000, reserved: 10000 },
-                experimental: { mcp_timeout: 5000 },
-                mcp: {
-                  local: { type: "local", command: ["node", "server.js"], enabled: false, timeout: 10000 },
-                  remote: {
-                    type: "remote",
-                    url: "https://mcp.example.com",
-                    oauth: { clientId: "client", callbackPort: 19876 },
-                    timeout: 20000,
+                  compaction: { auto: true, tail_turns: 3, preserve_recent_tokens: 2000, reserved: 10000 },
+                  experimental: { mcp_timeout: 5000 },
+                  mcp: {
+                    local: { type: "local", command: ["node", "server.js"], enabled: false, timeout: 10000 },
+                    remote: {
+                      type: "remote",
+                      url: "https://mcp.example.com",
+                      oauth: { clientId: "client", callbackPort: 19876 },
+                      timeout: 20000,
+                    },
                   },
-                },
-              }),
+                }),
+              ),
             ),
           )
 
@@ -673,11 +689,16 @@ describe("Config", () => {
     ).pipe(
       Effect.flatMap((tmp) =>
         Effect.gen(function* () {
+          const global = path.join(tmp.path, "global")
           yield* Effect.promise(() =>
-            Promise.all([
-              fs.writeFile(path.join(tmp.path, "opencode.json"), JSON.stringify({ $schema: "base" })),
-              fs.writeFile(path.join(tmp.path, "opencode.jsonc"), "{ invalid"),
-            ]),
+            fs
+              .mkdir(global, { recursive: true })
+              .then(() =>
+                Promise.all([
+                  fs.writeFile(path.join(global, "opencode.json"), JSON.stringify({ $schema: "base" })),
+                  fs.writeFile(path.join(global, "opencode.jsonc"), "{ invalid"),
+                ]),
+              ),
           )
           return yield* Effect.gen(function* () {
             const config = yield* Config.Service
@@ -724,7 +745,7 @@ describe("Config", () => {
     ),
   )
 
-  it.live("loads global, ancestor, and .opencode configuration up to the project boundary", () =>
+  it.live("loads only the account-scoped global configuration", () =>
     Effect.acquireRelease(
       Effect.promise(() => tmpdir()),
       (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
@@ -761,27 +782,11 @@ describe("Config", () => {
 
             expect(entries.filter((entry) => entry.type === "directory").map((entry) => entry.path)).toEqual([
               AbsolutePath.make(global),
-              AbsolutePath.make(path.join(root, ".opencode")),
-              AbsolutePath.make(path.join(directory, ".opencode")),
             ])
-            expect(documents.map((document) => document.info.$schema)).toEqual([
-              "global",
-              "root",
-              "parent",
-              "directory",
-              "root-dot",
-              "directory-dot",
-            ])
+            expect(documents.map((document) => document.info.$schema)).toEqual(["global"])
             expect(entries.map((entry) => (entry.type === "document" ? entry.info.$schema : entry.path))).toEqual([
               "global",
               AbsolutePath.make(global),
-              "root",
-              "parent",
-              "directory",
-              "root-dot",
-              AbsolutePath.make(path.join(root, ".opencode")),
-              "directory-dot",
-              AbsolutePath.make(path.join(directory, ".opencode")),
             ])
           }).pipe(
             Effect.provide(

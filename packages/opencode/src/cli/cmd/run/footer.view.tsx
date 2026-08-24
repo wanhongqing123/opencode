@@ -697,7 +697,13 @@ export function RunFooterView(props: RunFooterViewProps) {
                             onEdit={async (item) => {
                               if (!(await props.onQueuedRemove(item.messageID))) return
                               closePanel()
-                              queueMicrotask(() => composer.replacePrompt(item.prompt))
+                              queueMicrotask(() =>
+                                composer.replacePrompt({
+                                  ...item.prompt,
+                                  text: item.prompt.displayText ?? item.prompt.text,
+                                  displayText: undefined,
+                                }),
+                              )
                             }}
                             onRows={setSubagentMenuRows}
                           />

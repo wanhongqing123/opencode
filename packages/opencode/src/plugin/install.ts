@@ -330,11 +330,8 @@ export async function readPluginManifest(target: string): Promise<ManifestResult
   }
 }
 
-function patchDir(input: PatchInput) {
-  if (input.global) return input.config ?? Global.Path.config
-  const git = input.vcs === "git" && input.worktree !== "/"
-  const root = git ? input.worktree : input.directory
-  return path.join(root, ".opencode")
+function patchDir(_input: PatchInput) {
+  return Global.Path.config
 }
 
 function patchName(kind: Kind): "opencode" | "tui" {

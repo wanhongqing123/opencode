@@ -79,6 +79,16 @@ function footer() {
   }
 }
 
+async function waitFor(check: () => boolean, timeout = 1_000): Promise<void> {
+  const end = Date.now() + timeout
+  while (Date.now() < end) {
+    if (check()) return
+    await Bun.sleep(1)
+  }
+
+  throw new Error("timed out waiting for queue state")
+}
+
 describe("run runtime queue", () => {
   test("ignores empty prompts", async () => {
     const ui = footer()
@@ -309,7 +319,7 @@ describe("run runtime queue", () => {
 
     ui.submit("one")
     ui.submit("two")
-    await Promise.resolve()
+    await waitFor(() => seen.length === 1)
     expect(seen).toEqual(["one"])
 
     wake?.()
@@ -336,8 +346,7 @@ describe("run runtime queue", () => {
 
     ui.submit("one")
     ui.submit("two")
-    await Promise.resolve()
-    await Promise.resolve()
+    await waitFor(() => turns.length === 1)
 
     expect(turns.map((item) => item.text)).toEqual(["one"])
     expect(turns[0]?.messageID).toEqual(expect.any(String))
@@ -416,7 +425,7 @@ describe("run runtime queue", () => {
     })
 
     ui.submit("one")
-    await Promise.resolve()
+    await waitFor(() => seen.length === 1)
     expect(seen).toEqual(["one"])
 
     wake?.()
@@ -456,7 +465,7 @@ describe("run runtime queue", () => {
     })
 
     ui.submit("one")
-    await Promise.resolve()
+    await waitFor(() => seen.length === 1)
     ui.submit("two")
     ui.api.close()
     await task
@@ -477,5 +486,416 @@ describe("run runtime queue", () => {
 
     ui.submit("one")
     await expect(task).rejects.toThrow("boom")
+  })
+
+  test("submits an external model prompt while displaying only its friendly text", async () => {
+    const ui = footer()
+    const seen: RunPrompt[] = []
+    let submit: ((prompt: RunPrompt) => { ok: true } | { ok: false; error: string }) | undefined
+
+    const task = runPromptQueue({
+      footer: ui.api,
+      registerExternalSubmit(next) {
+        submit = next
+        return () => {
+          submit = undefined
+        }
+      },
+      run: async (prompt) => {
+        seen.push(prompt)
+        ui.api.close()
+      },
+    })
+
+    const result = submit?.({
+      text: "wrapped model prompt",
+      displayText: "来自 IM 的消息",
+      parts: [],
+    })
+    await task
+
+    expect(result).toEqual({ ok: true })
+    expect(seen[0]?.text).toBe("wrapped model prompt")
+    expect(ui.commits.map((item) => item.text)).toEqual(["来自 IM 的消息"])
+  })
+
+  test("does not change the active input origin until a queued prompt starts", async () => {
+    const ui = footer()
+    const started: Array<{ text: string; origin?: RunPrompt["inputOrigin"] }> = []
+    let submit: ((prompt: RunPrompt) => { ok: true } | { ok: false; error: string }) | undefined
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+
+    const task = runPromptQueue({
+      footer: ui.api,
+      registerExternalSubmit(next) {
+        submit = next
+        return () => {}
+      },
+      onStart(prompt) {
+        started.push({ text: prompt.text, origin: prompt.inputOrigin })
+      },
+      run: async (prompt) => {
+        if (prompt.text === "local turn") await gate
+        else ui.api.close()
+      },
+    })
+
+    ui.submit("local turn")
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(started).toEqual([{ text: "local turn", origin: undefined }])
+
+    expect(
+      submit?.({
+        text: "remote turn",
+        inputOrigin: "remote-im",
+        remoteImReplyID: "rim-queued",
+        remoteImTaskID: "task-queued",
+        parts: [],
+      }),
+    ).toEqual({ ok: true })
+    expect(started).toEqual([{ text: "local turn", origin: undefined }])
+
+    release()
+    await task
+    expect(started).toEqual([
+      { text: "local turn", origin: undefined },
+      { text: "remote turn", origin: "remote-im" },
+    ])
+  })
+
+  test("dispatches machine input as an immediate silent steer", async () => {
+    const ui = footer()
+    const steers: Array<{ prompt: string; active: string }> = []
+    const takeovers: string[] = []
+    let submit: ((prompt: RunPrompt) => { ok: true } | { ok: false; error: string }) | undefined
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+
+    const task = runPromptQueue({
+      footer: ui.api,
+      registerExternalSubmit(next) {
+        submit = next
+        return () => {}
+      },
+      onSubmit: (prompt) => takeovers.push(prompt.text),
+      onSteer: (prompt, active) => {
+        steers.push({ prompt: prompt.text, active: active.text })
+      },
+      run: async () => gate,
+    })
+
+    ui.submit("local active")
+    await waitFor(() => ui.commits.length === 1)
+    const queueEvents = ui.events.filter((event) => event.type === "queue").length
+    expect(
+      submit?.({
+        text: "machine steer",
+        inputOrigin: "remote-im-machine",
+        parts: [],
+      }),
+    ).toEqual({ ok: true })
+
+    expect(steers).toEqual([{ prompt: "machine steer", active: "local active" }])
+    expect(takeovers).toEqual(["local active"])
+    expect(ui.events.filter((event) => event.type === "queue")).toHaveLength(queueEvents)
+
+    release()
+    ui.api.close()
+    await task
+  })
+
+  test("exposes an immediate remote steer failure to the control caller", async () => {
+    const ui = footer()
+    let submit:
+      | ((prompt: RunPrompt) => { ok: true; completion?: Promise<void> } | { ok: false; error: string })
+      | undefined
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const task = runPromptQueue({
+      footer: ui.api,
+      registerExternalSubmit(next) {
+        submit = next
+        return () => {}
+      },
+      onSteer: async () => {
+        throw new Error("steer failed")
+      },
+      run: async () => gate,
+    })
+
+    ui.submit("local active")
+    await waitFor(() => ui.commits.length === 1)
+    const result = submit?.({
+      text: "machine steer",
+      inputOrigin: "remote-im-machine",
+      parts: [],
+    })
+
+    expect(result?.ok).toBe(true)
+    if (!result?.ok) throw new Error("expected steer completion")
+    await expect(result.completion).rejects.toThrow("steer failed")
+
+    release()
+    ui.api.close()
+    await task
+  })
+
+  test("steers every remote human input immediately without a future-turn queue", async () => {
+    const ui = footer()
+    const steers: string[] = []
+    let submit: ((prompt: RunPrompt) => { ok: true } | { ok: false; error: string }) | undefined
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+
+    const task = runPromptQueue({
+      footer: ui.api,
+      registerExternalSubmit(next) {
+        submit = next
+        return () => {}
+      },
+      onSteer: (prompt) => {
+        steers.push(prompt.text)
+      },
+      run: async () => gate,
+    })
+
+    submit?.({
+      text: "human active",
+      inputOrigin: "remote-im",
+      remoteImReplyID: "reply-active",
+      remoteImTaskID: "task-active",
+      parts: [],
+    })
+    await waitFor(() => ui.commits.length === 1)
+    const queueEvents = ui.events.filter((event) => event.type === "queue").length
+
+    expect(
+      submit?.({
+        text: "same identity",
+        inputOrigin: "remote-im",
+        remoteImReplyID: "reply-active",
+        remoteImTaskID: "task-active",
+        parts: [],
+      }),
+    ).toEqual({ ok: true })
+    expect(
+      submit?.({
+        text: "different identity",
+        inputOrigin: "remote-im",
+        remoteImReplyID: "reply-other",
+        remoteImTaskID: "task-other",
+        parts: [],
+      }),
+    ).toEqual({ ok: true })
+
+    expect(steers).toEqual(["same identity", "different identity"])
+    expect(ui.events.filter((event) => event.type === "queue")).toHaveLength(queueEvents)
+
+    release()
+    ui.api.close()
+    await task
+  })
+
+  test("reports local takeover immediately while a remote turn is still active", async () => {
+    const ui = footer()
+    const takeover: Array<{ submitted: string; active?: string }> = []
+    let submit: ((prompt: RunPrompt) => { ok: true } | { ok: false; error: string }) | undefined
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+
+    const task = runPromptQueue({
+      footer: ui.api,
+      registerExternalSubmit(next) {
+        submit = next
+        return () => {}
+      },
+      onSubmit(prompt, active) {
+        takeover.push({ submitted: prompt.text, active: active?.text })
+      },
+      run: async (prompt) => {
+        if (prompt.text === "remote active") await gate
+        else ui.api.close()
+      },
+    })
+
+    submit?.({
+      text: "remote active",
+      inputOrigin: "remote-im",
+      remoteImReplyID: "rim-active",
+      remoteImTaskID: "task-active",
+      parts: [],
+    })
+    await Promise.resolve()
+    await Promise.resolve()
+    ui.submit("local takeover")
+
+    expect(takeover).toEqual([{ submitted: "local takeover", active: "remote active" }])
+    release()
+    await task
+  })
+
+  test("reports a remote /new lifecycle without sending it to the model", async () => {
+    const ui = footer()
+    const started: string[] = []
+    const finished: Array<{ text: string; status: string; command?: string }> = []
+    let submit: ((prompt: RunPrompt) => { ok: true } | { ok: false; error: string }) | undefined
+    let runs = 0
+
+    const task = runPromptQueue({
+      footer: ui.api,
+      registerExternalSubmit(next) {
+        submit = next
+        return () => {}
+      },
+      onStart(prompt) {
+        started.push(prompt.text)
+      },
+      onFinish(prompt, result) {
+        finished.push({
+          text: prompt.text,
+          status: result.status,
+          ...(result.status === "completed" && result.command ? { command: result.command } : {}),
+        })
+      },
+      onNewSession: async () => {
+        setTimeout(() => ui.api.close(), 0)
+        return { ok: true }
+      },
+      run: async () => {
+        runs += 1
+      },
+    })
+
+    expect(
+      submit?.({
+        text: "/new",
+        inputOrigin: "remote-im",
+        remoteImReplyID: "rim-new",
+        remoteImTaskID: "task-new",
+        parts: [],
+      }),
+    ).toEqual({ ok: true })
+    await task
+
+    expect(runs).toBe(0)
+    expect(started).toEqual(["/new"])
+    expect(finished).toEqual([{ text: "/new", status: "completed", command: "new-session" }])
+  })
+
+  test("closes a remote /new with one cancellation even if session creation never settles", async () => {
+    const ui = footer()
+    const finished: Array<{ text: string; status: string }> = []
+    let submit: ((prompt: RunPrompt) => { ok: true } | { ok: false; error: string }) | undefined
+    const task = runPromptQueue({
+      footer: ui.api,
+      registerExternalSubmit(next) {
+        submit = next
+        return () => {}
+      },
+      onFinish(prompt, result) {
+        finished.push({ text: prompt.text, status: result.status })
+      },
+      onNewSession: () => new Promise(() => {}),
+      run: async () => {},
+    })
+
+    submit?.({
+      text: "/new",
+      inputOrigin: "remote-im",
+      remoteImReplyID: "rim-new-close",
+      remoteImTaskID: "task-new-close",
+      parts: [],
+    })
+    await Promise.resolve()
+    ui.api.close()
+    await task
+
+    expect(finished).toEqual([{ text: "/new", status: "cancelled" }])
+  })
+
+  test("close releases an accepted turn while the footer idle barrier is stuck", async () => {
+    const ui = footer()
+    ui.api.idle = () => new Promise(() => {})
+    const finished: string[] = []
+    const task = runPromptQueue({
+      footer: ui.api,
+      onFinish(_prompt, result) {
+        finished.push(result.status)
+      },
+      run: async () => {},
+    })
+
+    ui.submit("waiting")
+    await Promise.resolve()
+    ui.api.close()
+    await task
+
+    expect(finished).toEqual(["cancelled"])
+  })
+
+  test("rejects remote /exit before accepting a route", async () => {
+    const ui = footer()
+    let submit: ((prompt: RunPrompt) => { ok: true } | { ok: false; error: string }) | undefined
+    const started: string[] = []
+    const task = runPromptQueue({
+      footer: ui.api,
+      registerExternalSubmit(next) {
+        submit = next
+        return () => {}
+      },
+      onStart: (prompt) => started.push(prompt.text),
+      run: async () => {},
+    })
+
+    const result = submit?.({ text: "/exit", inputOrigin: "remote-im", parts: [] })
+    ui.api.close()
+    await task
+
+    expect(result).toEqual({ ok: false, error: "remote /exit is not supported" })
+    expect(started).toEqual([])
+  })
+
+  test("finishes queued prompts exactly once when the queue closes", async () => {
+    const ui = footer()
+    const finished: Array<{ text: string; status: string }> = []
+    let submit: ((prompt: RunPrompt) => { ok: true } | { ok: false; error: string }) | undefined
+
+    const task = runPromptQueue({
+      footer: ui.api,
+      registerExternalSubmit(next) {
+        submit = next
+        return () => {}
+      },
+      onFinish(prompt, result) {
+        finished.push({ text: prompt.text, status: result.status })
+      },
+      run: async (_prompt, signal) => {
+        await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }))
+      },
+    })
+
+    ui.submit("active")
+    await Promise.resolve()
+    await Promise.resolve()
+    submit?.({ text: "queued remote", inputOrigin: "remote-im", parts: [] })
+    ui.api.close()
+    await task
+
+    expect(finished).toEqual([
+      { text: "queued remote", status: "cancelled" },
+      { text: "active", status: "cancelled" },
+    ])
   })
 })

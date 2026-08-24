@@ -26,7 +26,6 @@ import {
 } from "solid-js"
 import { TuiPathsProvider, TuiStartupProvider, TuiTerminalEnvironmentProvider, useTuiStartup } from "./context/runtime"
 import { DialogProvider, useDialog } from "./ui/dialog"
-import { DialogProvider as DialogProviderList } from "./component/dialog-provider"
 import { ErrorComponent } from "./component/error-component"
 import { PluginRouteMissing } from "./component/plugin-route-missing"
 import { ProjectProvider, useProject } from "./context/project"
@@ -40,7 +39,6 @@ import { LocationProvider } from "./context/location"
 import { LocalProvider, useLocal } from "./context/local"
 import { PermissionProvider } from "./context/permission"
 import { DialogModel } from "./component/dialog-model"
-import { useConnected } from "./component/use-connected"
 import { DialogMcp } from "./component/dialog-mcp"
 import { DialogStatus } from "./component/dialog-status"
 import { DialogDebug } from "./component/dialog-debug"
@@ -86,6 +84,8 @@ import * as TuiAudio from "./audio"
 import { win32DisableProcessedInput, win32FlushInputBuffer } from "./terminal-win32"
 import { destroyRenderer } from "./util/renderer"
 import { cliErrorMessage, errorFormat } from "./util/error"
+import { remoteImPromptParts, type RemoteImImageAttachment } from "./util/remote-im-display"
+import { MultiAiCodeImProvider } from "./context/multi-ai-code-im"
 
 registerOpencodeSpinner()
 
@@ -116,7 +116,6 @@ const appBindingCommands = [
   "agent.cycle.reverse",
   "variant.cycle",
   "variant.list",
-  "provider.connect",
   "console.org.switch",
   "opencode.status",
   "opencode.debug",
@@ -148,6 +147,40 @@ export type TuiInput = {
   fetch?: typeof fetch
   headers?: RequestInit["headers"]
   events?: EventSource
+  multiAiCodeImControl?: {
+    setInputOrigin?(origin: "remote-im" | "tui", sessionID?: string): void
+    isRemoteImForwardingActive?(): boolean
+    sendTaskStarted?(input?: { replyID?: string; taskID?: string }): void
+    registerRemoteTask?(input: { replyID?: string; taskID: string }): void
+    remoteTaskID?(replyID: string): string | undefined
+    forgetRemoteTask?(replyID: string): void
+    sendTurnError?(input: { text: string; replyID?: string; taskID?: string; messageID?: string }): void
+    sendControlResult(input: { requestID: string; ok: boolean; text: string; error?: string }): void
+    onControlCommand(
+      handler: (
+        command:
+          | { command: "switch_mode"; mode: "plan" | "build"; requestID?: string }
+          | { command: "status"; requestID: string }
+          | { command: "model"; requestID: string; model?: string }
+          | { command: "goal"; requestID: string; goal?: string }
+          | { command: "btw"; requestID: string; task: string; replyID?: string }
+          | {
+              command: "submit_user_message"
+              requestID: string
+              text: string
+              displayText: string
+              attachments: RemoteImImageAttachment[]
+              inputOrigin: "remote-im" | "remote-im-machine" | "local"
+              replyID?: string
+              taskID?: string
+            }
+          | { command: "interrupt"; requestID: string }
+          | { command: "compact"; requestID: string }
+          | { command: "clear"; requestID: string }
+          | { command: "theme"; mode: "light" | "dark"; requestID?: string },
+      ) => void,
+    ): () => void
+  }
   pluginHost: TuiPluginHost
 }
 
@@ -315,10 +348,18 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
                                                               <PromptRefProvider>
                                                                 <EditorContextProvider>
                                                                   <LocationProvider>
-                                                                    <App
-                                                                      onSnapshot={input.onSnapshot}
-                                                                      pluginHost={input.pluginHost}
-                                                                    />
+                                                                    <MultiAiCodeImProvider
+                                                                      control={input.multiAiCodeImControl}
+                                                                    >
+                                                                      <App
+                                                                        onSnapshot={input.onSnapshot}
+                                                                        directory={input.directory}
+                                                                        pluginHost={input.pluginHost}
+                                                                        multiAiCodeImControl={
+                                                                          input.multiAiCodeImControl
+                                                                        }
+                                                                      />
+                                                                    </MultiAiCodeImProvider>
                                                                   </LocationProvider>
                                                                 </EditorContextProvider>
                                                               </PromptRefProvider>
@@ -362,7 +403,12 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
   })
 })
 
-function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPluginHost }) {
+function App(props: {
+  onSnapshot?: () => Promise<string[]>
+  directory?: string
+  pluginHost: TuiPluginHost
+  multiAiCodeImControl?: TuiInput["multiAiCodeImControl"]
+}) {
   const startup = useTuiStartup()
   const tuiConfig = useTuiConfig()
   const route = useRoute()
@@ -498,6 +544,481 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
     })
   })
 
+  onMount(() => {
+    let remoteImGoal: { objective: string; status: "active" | "paused" } | undefined
+    const formatRemoteImGoal = () => {
+      if (!remoteImGoal) return "OpenCode 当前没有设置 IM Goal。"
+      return [`OpenCode IM Goal ${remoteImGoal.status}`, `Objective: ${remoteImGoal.objective}`].join("\n")
+    }
+
+    const unsubscribe = props.multiAiCodeImControl?.onControlCommand((command) => {
+      const modelChoices = () =>
+        sync.data.provider
+          .flatMap((provider) =>
+            Object.entries(provider.models)
+              .filter(([, info]) => info.status !== "deprecated")
+              .map(([modelID, info]) => ({
+                providerID: provider.id,
+                providerName: provider.name ?? provider.id,
+                modelID,
+                modelName: info.name ?? modelID,
+                key: `${provider.id}/${modelID}`,
+              })),
+          )
+          .toSorted(
+            (left, right) =>
+              left.providerName.localeCompare(right.providerName) ||
+              left.modelName.localeCompare(right.modelName) ||
+              left.key.localeCompare(right.key),
+          )
+
+      const formatModelList = () => {
+        const current = local.model.current()
+        const currentKey = current ? `${current.providerID}/${current.modelID}` : undefined
+        const choices = modelChoices()
+        const lines = [`当前模型：${currentKey ?? "<none>"}`]
+        if (!choices.length) {
+          lines.push("模型列表暂不可用。")
+          return lines.join("\n")
+        }
+        lines.push("可用模型：")
+        for (const [index, choice] of choices.entries()) {
+          const marker = choice.key === currentKey ? "（当前）" : ""
+          lines.push(`${index + 1}. ${choice.modelName}${marker}`)
+          lines.push(`   ID: ${choice.key}`)
+        }
+        lines.push("用法：/model <序号或 provider/model>")
+        return lines.join("\n")
+      }
+
+      if (command.command === "submit_user_message") {
+        const sessionID = route.data.type === "session" ? route.data.sessionID : undefined
+        const currentModel = local.model.current()
+        const agent = local.agent.current()
+        if (!sessionID || !currentModel || !agent) {
+          props.multiAiCodeImControl?.sendControlResult({
+            requestID: command.requestID,
+            ok: false,
+            text: "",
+            error: "当前 OpenCode 会话尚未准备好接收消息。",
+          })
+          return
+        }
+
+        const submit = (signal?: AbortSignal) =>
+          sdk.client.session.promptAsync(
+            {
+              sessionID,
+              agent: agent.name,
+              model: currentModel,
+              variant: local.model.variant.current(),
+              parts: remoteImPromptParts(command.text, command.displayText, command.attachments, {
+                ...(command.inputOrigin === "remote-im"
+                  ? {
+                      route: {
+                        ...(command.replyID ? { replyID: command.replyID } : {}),
+                        ...(command.taskID ? { taskID: command.taskID } : {}),
+                      },
+                    }
+                  : {}),
+              }),
+            },
+            signal ? { signal } : undefined,
+          )
+
+        if (command.inputOrigin !== "local") {
+          const existingTaskID =
+            command.inputOrigin === "remote-im" && command.replyID
+              ? props.multiAiCodeImControl?.remoteTaskID?.(command.replyID)
+              : undefined
+          const continuation = !!(
+            command.inputOrigin === "remote-im" &&
+            command.taskID &&
+            existingTaskID === command.taskID
+          )
+          if (command.inputOrigin === "remote-im" && command.taskID && !continuation) {
+            props.multiAiCodeImControl?.registerRemoteTask?.({
+              taskID: command.taskID,
+              ...(command.replyID ? { replyID: command.replyID } : {}),
+            })
+          }
+          if (command.inputOrigin === "remote-im") {
+            props.multiAiCodeImControl?.setInputOrigin?.("remote-im", sessionID)
+          }
+          void submit()
+            .then((result) => {
+              if (result.error) throw result.error
+              props.multiAiCodeImControl?.sendControlResult({
+                requestID: command.requestID,
+                ok: true,
+                text: "steered",
+              })
+            })
+            .catch((error) => {
+              if (command.inputOrigin === "remote-im" && command.replyID && !continuation) {
+                props.multiAiCodeImControl?.forgetRemoteTask?.(command.replyID)
+                props.multiAiCodeImControl?.setInputOrigin?.("tui", sessionID)
+              }
+              props.multiAiCodeImControl?.sendControlResult({
+                requestID: command.requestID,
+                ok: false,
+                text: "",
+                error: errorMessage(error),
+              })
+            })
+          return
+        }
+
+        const submitLocal = () => {
+          props.multiAiCodeImControl?.setInputOrigin?.("tui", sessionID)
+          return submit()
+        }
+        void submitLocal()
+          .then((result) => {
+            if (result.error) throw result.error
+            props.multiAiCodeImControl?.sendControlResult({
+              requestID: command.requestID,
+              ok: true,
+              text: "queued",
+            })
+          })
+          .catch((error) => {
+            if (command.replyID) props.multiAiCodeImControl?.forgetRemoteTask?.(command.replyID)
+            props.multiAiCodeImControl?.sendControlResult({
+              requestID: command.requestID,
+              ok: false,
+              text: "",
+              error: errorMessage(error),
+            })
+          })
+        return
+      }
+
+      if (command.command === "status") {
+        const model = local.model.current()
+        const parsedModel = local.model.parsed()
+        const agent = local.agent.current()
+        const sessionID = route.data.type === "session" ? route.data.sessionID : undefined
+        const lines = [
+          "OpenCode",
+          `Session: ${sessionID ?? "<none>"}`,
+          `Directory: ${props.directory ?? process.cwd()}`,
+          `Agent: ${agent?.name ?? "<none>"}`,
+          `Mode: ${agent?.name === "plan" ? "plan" : "build"}`,
+          `Provider: ${parsedModel.provider}`,
+          `Model: ${parsedModel.model}`,
+          ...(model ? [`Model ID: ${model.providerID}/${model.modelID}`] : []),
+        ]
+        props.multiAiCodeImControl?.sendControlResult({
+          requestID: command.requestID,
+          ok: true,
+          text: lines.join("\n"),
+        })
+        return
+      }
+      if (command.command === "model") {
+        const selection = command.model?.trim()
+        if (!selection) {
+          props.multiAiCodeImControl?.sendControlResult({
+            requestID: command.requestID,
+            ok: true,
+            text: formatModelList(),
+          })
+          return
+        }
+
+        const choices = modelChoices()
+        let target: { providerID: string; modelID: string; key: string; modelName: string } | undefined
+        if (/^\d+$/.test(selection)) {
+          const index = Number(selection)
+          const choice = index > 0 ? choices[index - 1] : undefined
+          if (choice) target = choice
+        } else if (selection.includes("/")) {
+          const parsed = Model.parse(selection)
+          const choice = choices.find(
+            (item) => item.providerID === parsed.providerID && item.modelID === parsed.modelID,
+          )
+          if (choice) target = choice
+        } else {
+          const matches = choices.filter(
+            (item) => item.modelID === selection || item.modelName.toLowerCase() === selection.toLowerCase(),
+          )
+          if (matches.length === 1) {
+            target = matches[0]
+          } else if (matches.length > 1) {
+            props.multiAiCodeImControl?.sendControlResult({
+              requestID: command.requestID,
+              ok: true,
+              text:
+                "模型名不唯一，请使用完整 provider/model：\n" +
+                matches.map((item) => `- ${item.modelName} (${item.key})`).join("\n"),
+            })
+            return
+          }
+        }
+
+        if (!target) {
+          props.multiAiCodeImControl?.sendControlResult({
+            requestID: command.requestID,
+            ok: true,
+            text: `未找到模型：${selection}\n\n${formatModelList()}`,
+          })
+          return
+        }
+
+        const current = local.model.current()
+        if (current?.providerID === target.providerID && current.modelID === target.modelID) {
+          props.multiAiCodeImControl?.sendControlResult({
+            requestID: command.requestID,
+            ok: true,
+            text: `当前已经是模型：${target.key}`,
+          })
+          return
+        }
+
+        local.model.set({ providerID: target.providerID, modelID: target.modelID }, { recent: true })
+        props.multiAiCodeImControl?.sendControlResult({
+          requestID: command.requestID,
+          ok: true,
+          text: `已切换模型：${target.modelName} (${target.key})`,
+        })
+        return
+      }
+      if (command.command === "goal") {
+        const input = command.goal?.trim()
+        const usage = "用法：/goal [目标|clear|pause|resume]"
+        if (!input) {
+          props.multiAiCodeImControl?.sendControlResult({
+            requestID: command.requestID,
+            ok: true,
+            text: `${formatRemoteImGoal()}\n\n${usage}`,
+          })
+          return
+        }
+        if (input === "clear") {
+          remoteImGoal = undefined
+          props.multiAiCodeImControl?.sendControlResult({
+            requestID: command.requestID,
+            ok: true,
+            text: "OpenCode IM Goal cleared.",
+          })
+          return
+        }
+        if (input === "pause" || input === "paused") {
+          if (remoteImGoal) remoteImGoal = { ...remoteImGoal, status: "paused" }
+          props.multiAiCodeImControl?.sendControlResult({
+            requestID: command.requestID,
+            ok: !!remoteImGoal,
+            text: remoteImGoal ? formatRemoteImGoal() : `OpenCode 当前没有设置 IM Goal。\n\n${usage}`,
+            ...(remoteImGoal ? {} : { error: "no OpenCode IM goal is currently set" }),
+          })
+          return
+        }
+        if (input === "resume" || input === "active") {
+          if (remoteImGoal) remoteImGoal = { ...remoteImGoal, status: "active" }
+          props.multiAiCodeImControl?.sendControlResult({
+            requestID: command.requestID,
+            ok: !!remoteImGoal,
+            text: remoteImGoal ? formatRemoteImGoal() : `OpenCode 当前没有设置 IM Goal。\n\n${usage}`,
+            ...(remoteImGoal ? {} : { error: "no OpenCode IM goal is currently set" }),
+          })
+          return
+        }
+        remoteImGoal = { objective: input, status: "active" }
+        props.multiAiCodeImControl?.sendControlResult({
+          requestID: command.requestID,
+          ok: true,
+          text: formatRemoteImGoal(),
+        })
+        return
+      }
+      if (command.command === "btw") {
+        props.multiAiCodeImControl?.sendControlResult({
+          requestID: command.requestID,
+          ok: false,
+          text: "",
+          error: "OpenCode 暂不支持 IM /btw 子任务；请直接发送普通 IM 任务。",
+        })
+        return
+      }
+      if (command.command === "interrupt") {
+        const sessionID = route.data.type === "session" ? route.data.sessionID : undefined
+        if (!sessionID) {
+          props.multiAiCodeImControl?.sendControlResult({
+            requestID: command.requestID,
+            ok: false,
+            text: "",
+            error: "当前没有可中断的 OpenCode 会话。",
+          })
+          return
+        }
+        const status = sync.data.session_status?.[sessionID]
+        if (status?.type === "idle") {
+          props.multiAiCodeImControl?.sendControlResult({
+            requestID: command.requestID,
+            ok: false,
+            text: "",
+            error: "当前没有正在运行的任务。",
+          })
+          return
+        }
+        void (async () => {
+          try {
+            const result = await sdk.client.session.abort({ sessionID })
+            if (result.error) throw result.error
+            props.multiAiCodeImControl?.sendControlResult({
+              requestID: command.requestID,
+              ok: true,
+              text: "已请求中断当前任务。",
+            })
+          } catch (error) {
+            props.multiAiCodeImControl?.sendControlResult({
+              requestID: command.requestID,
+              ok: false,
+              text: "",
+              error: errorMessage(error),
+            })
+          }
+        })()
+        return
+      }
+      if (command.command === "compact") {
+        const sessionID = route.data.type === "session" ? route.data.sessionID : undefined
+        const selectedModel = local.model.current()
+        if (!sessionID) {
+          props.multiAiCodeImControl?.sendControlResult({
+            requestID: command.requestID,
+            ok: false,
+            text: "",
+            error: "当前没有可压缩的 OpenCode 会话。",
+          })
+          return
+        }
+        const status = sync.data.session_status?.[sessionID]
+        if (status && status.type !== "idle") {
+          props.multiAiCodeImControl?.sendControlResult({
+            requestID: command.requestID,
+            ok: false,
+            text: "",
+            error: "当前任务运行中，请先 /interrupt 或等待结束后再 /compact。",
+          })
+          return
+        }
+        if (!selectedModel) {
+          props.multiAiCodeImControl?.sendControlResult({
+            requestID: command.requestID,
+            ok: false,
+            text: "",
+            error: "当前没有可用于压缩上下文的模型配置。",
+          })
+          return
+        }
+        void (async () => {
+          try {
+            const result = await sdk.client.session.summarize({
+              sessionID,
+              modelID: selectedModel.modelID,
+              providerID: selectedModel.providerID,
+            })
+            if (result.error) throw result.error
+            props.multiAiCodeImControl?.sendControlResult({
+              requestID: command.requestID,
+              ok: true,
+              text: "已请求压缩当前上下文。",
+            })
+          } catch (error) {
+            props.multiAiCodeImControl?.sendControlResult({
+              requestID: command.requestID,
+              ok: false,
+              text: "",
+              error: errorMessage(error),
+            })
+          }
+        })()
+        return
+      }
+      if (command.command === "clear") {
+        const sessionID = route.data.type === "session" ? route.data.sessionID : undefined
+        const status = sessionID ? sync.data.session_status?.[sessionID] : undefined
+        if (status && status.type !== "idle") {
+          props.multiAiCodeImControl?.sendControlResult({
+            requestID: command.requestID,
+            ok: false,
+            text: "",
+            error: "当前任务运行中，请先 /interrupt 或等待结束后再 /clear。",
+          })
+          return
+        }
+        void (async () => {
+          try {
+            const selectedModel = local.model.current()
+            const agent = local.agent.current()
+            const variant = local.model.variant.current()
+            const result = await sdk.client.session.create({
+              directory: props.directory ?? process.cwd(),
+              agent: agent?.name ?? "build",
+              ...(selectedModel
+                ? {
+                    model: {
+                      providerID: selectedModel.providerID,
+                      id: selectedModel.modelID,
+                      variant,
+                    },
+                  }
+                : {}),
+            })
+            if (result.error) throw result.error
+            route.navigate({ type: "session", sessionID: result.data.id })
+            props.multiAiCodeImControl?.sendControlResult({
+              requestID: command.requestID,
+              ok: true,
+              text: "已清空上下文并开启新会话。",
+            })
+          } catch (error) {
+            props.multiAiCodeImControl?.sendControlResult({
+              requestID: command.requestID,
+              ok: false,
+              text: "",
+              error: errorMessage(error),
+            })
+          }
+        })()
+        return
+      }
+      if (command.command === "theme") {
+        // 宿主 app 切明暗时下发。setMode(=pin) 会重新锁定并持久化到目标模式，
+        // 覆盖 OPENCODE_THEME_MODE 环境默认，运行时立即重绘、无需重启会话。
+        setMode(command.mode)
+        if (command.requestID) {
+          props.multiAiCodeImControl?.sendControlResult({
+            requestID: command.requestID,
+            ok: true,
+            text: "",
+          })
+        }
+        return
+      }
+      if (command.command !== "switch_mode") return
+      local.agent.set(command.mode === "plan" ? "plan" : "build")
+      toast.show({
+        variant: "info",
+        message: `Switched to ${command.mode === "plan" ? "Plan" : "Build"} mode from IM`,
+        duration: 2500,
+      })
+      // 主仓以 requestId RPC 等确认；带 requestID 时回执真实结果，避免宿主超时误报。
+      if (command.requestID) {
+        props.multiAiCodeImControl?.sendControlResult({
+          requestID: command.requestID,
+          ok: true,
+          text: "",
+        })
+      }
+    })
+    onCleanup(() => {
+      unsubscribe?.()
+    })
+  })
+
   let continued = false
   createEffect(() => {
     // When using -c, session list is loaded in blocking phase, so we can navigate at "partial"
@@ -537,18 +1058,6 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
     })
   })
 
-  createEffect(
-    on(
-      () => sync.status === "complete" && sync.data.provider.length === 0,
-      (isEmpty, wasEmpty) => {
-        // only trigger when we transition into an empty-provider state
-        if (!isEmpty || wasEmpty) return
-        dialog.replace(() => <DialogProviderList />)
-      },
-    ),
-  )
-
-  const connected = useConnected()
   const currentWorktreeWorkspace = createMemo(() => {
     const workspaceID = project.workspace.current()
     if (!workspaceID) return
@@ -734,16 +1243,6 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
         run: () => {
           local.agent.move(-1)
         },
-      },
-      {
-        name: "provider.connect",
-        title: "Connect provider",
-        suggested: !connected(),
-        slashName: "connect",
-        run: () => {
-          dialog.replace(() => <DialogProviderList />)
-        },
-        category: "Provider",
       },
       ...(sync.data.console_state.switchableOrgCount > 1
         ? [

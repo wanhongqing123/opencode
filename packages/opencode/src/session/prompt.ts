@@ -221,7 +221,7 @@ const layer = Layer.effect(
           (yield* provider.getModel(input.providerID, input.modelID)))
       const msgs = onlySubtasks
         ? [{ role: "user" as const, content: subtasks.map((p) => p.prompt).join("\n") }]
-        : yield* MessageV2.toModelMessagesEffect(context, mdl)
+        : yield* MessageV2.toModelMessagesEffect(context, mdl, { stripUnsupportedImages: true })
       const text = yield* llm
         .stream({
           agent: ag,
@@ -1259,7 +1259,7 @@ const layer = Layer.effect(
               sys.environment(model),
               instruction.system().pipe(Effect.orDie),
               sys.mcp(agent, session.permission),
-              MessageV2.toModelMessagesEffect(msgs, model),
+              MessageV2.toModelMessagesEffect(msgs, model, { stripUnsupportedImages: true }),
             ])
             const system = [
               ...env,
