@@ -47,6 +47,25 @@ OpenCode validates configuration strictly. Preserve existing JSON/JSONC
 formatting, edit only fields required by the request, and avoid introducing
 provider or model fields managed by the host.
 
+| Scope                         | Path                                                                                                                      |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| Project config                | `./opencode.json`, `./opencode.jsonc`, or `.opencode/opencode.json` (opencode walks up from the cwd to the worktree root) |
+| Global config                 | `~/.config/opencode/opencode.json` or `~/.config/opencode/opencode.jsonc` (NOT `~/.opencode/`)                            |
+| Project agents                | `.opencode/agent/<name>.md` or `.opencode/agents/<name>.md`                                                               |
+| Global agents                 | `~/.config/opencode/agent(s)/<name>.md`                                                                                   |
+| Project commands              | `.opencode/command/<name>.md` or `.opencode/commands/<name>.md`                                                           |
+| Global commands               | `~/.config/opencode/command(s)/<name>.md`                                                                                 |
+| Project skills                | `.opencode/skill(s)/<name>/SKILL.md`                                                                                      |
+| Global skills                 | `~/.config/opencode/skill(s)/<name>/SKILL.md`                                                                             |
+| External skills (auto-loaded) | `~/.claude/skills/<name>/SKILL.md`, `~/.agents/skills/<name>/SKILL.md`                                                    |
+
+Configs from each scope are deep-merged. Project overrides global. Unknown
+top-level keys in `opencode.json` are rejected with `ConfigInvalidError`.
+
+## opencode.json
+
+Every field is optional.
+
 Common account-level fields include:
 
 ```json
