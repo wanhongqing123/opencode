@@ -26,7 +26,6 @@
 //   to the next pending request or to the prompt view.
 import type { Event, Part, PermissionRequest, QuestionRequest, ToolPart } from "@opencode-ai/sdk/v2"
 import * as Locale from "@/util/locale"
-import { visibleRemoteImReplyText } from "./remote-im-display"
 import { toolView } from "./tool"
 import type { FooterOutput, FooterPatch, FooterView, StreamCommit } from "./types"
 
@@ -550,7 +549,7 @@ function flushPart(data: SessionData, commits: SessionCommit[], partID: string, 
   if (kind === "assistant" && chunk) {
     const source = (data.renderText.get(partID) ?? "") + chunk
     data.renderText.set(partID, source)
-    const next = visibleRemoteImReplyText(source)
+    const next = source
     const previous = data.visible.get(partID) ?? ""
     chunk = next.startsWith(previous) ? next.slice(previous.length) : ""
   }
